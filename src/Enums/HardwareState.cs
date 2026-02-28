@@ -1,6 +1,6 @@
 ﻿namespace DrawnUi.Camera;
 
-public enum CameraState
+public enum HardwareState
 {
     /// <summary>
     /// Stopped
