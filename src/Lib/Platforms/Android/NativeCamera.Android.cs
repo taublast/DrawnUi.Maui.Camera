@@ -1,7 +1,6 @@
 ﻿using System.Buffers;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
-using Windows.Win32.Graphics.Direct3D11;
 using Android.Content;
 using Android.Content.Res;
 using Android.Graphics;

@@ -112,7 +112,7 @@
 
 
   <ItemGroup>
-    <Compile Include="..\..\..\..\..\Secrets.Ai.cs" Link="Secrets.Ai.cs" />
+    <Compile Include="..\..\..\..\Secrets.Ai.cs" Link="Secrets.Ai.cs" />
   </ItemGroup>
 
 

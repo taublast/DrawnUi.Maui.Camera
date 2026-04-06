@@ -10,6 +10,8 @@
       <SymbolPackageFormat>snupkg</SymbolPackageFormat>
       <CreatePackage>false</CreatePackage>
       <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+      <SingleProject>true</SingleProject>
+      <ImplicitUsings>enable</ImplicitUsings>
 
       <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">21.0</SupportedOSPlatformVersion>
       <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios'">12.2</SupportedOSPlatformVersion>
