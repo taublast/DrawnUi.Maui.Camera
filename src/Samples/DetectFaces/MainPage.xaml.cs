@@ -291,8 +291,14 @@ public partial class MainPage : ContentPage
 
         var metrics = _lastPreviewMetrics;
         var sourceText = metrics.ReusedCachedFrame ? "cached" : "live";
+        var otherDetectorMilliseconds = Math.Max(
+            0,
+            metrics.DetectionMilliseconds
+            - detection.ConversionMilliseconds
+            - detection.InferenceMilliseconds
+            - detection.ResultMappingMilliseconds);
         var backendText = detection.InferenceMilliseconds > 0
-            ? $", conv {detection.ConversionMilliseconds:F1}, mp {detection.InferenceMilliseconds:F1}, {(detection.UsedGpuDelegate ? "gpu" : "cpu")}"
+            ? $", conv {detection.ConversionMilliseconds:F1}, mp {detection.InferenceMilliseconds:F1}, map {detection.ResultMappingMilliseconds:F1}, other {otherDetectorMilliseconds:F1}, {(detection.UsedGpuDelegate ? "gpu" : "cpu")}"
             : string.Empty;
 
         StatusLabel.Text = $"{facesText} size {metrics.ResizeMilliseconds:F1}, det {metrics.DetectionMilliseconds:F1}{backendText}, {metrics.Width}x{metrics.Height}, {sourceText}";

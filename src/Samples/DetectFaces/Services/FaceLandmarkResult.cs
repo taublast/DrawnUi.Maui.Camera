@@ -35,6 +35,7 @@ public class FaceLandmarkResult
     public int ImageHeight { get; init; }
     public double ConversionMilliseconds { get; init; }
     public double InferenceMilliseconds { get; init; }
+    public double ResultMappingMilliseconds { get; init; }
     public bool UsedGpuDelegate { get; init; }
 }
 

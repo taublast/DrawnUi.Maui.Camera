@@ -14,6 +14,8 @@ namespace TestFaces.Platforms.Droid;
 /// </summary>
 public class FaceLandmarkDetector : IFaceLandmarkDetector
 {
+    private const int LitePreviewLandmarkStride = 6;
+
     private FaceLandmarker? _landmarker;
     private readonly object _landmarkerSync = new();
     private readonly object _pendingSync = new();
@@ -135,45 +137,42 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
 
     public void EnqueuePreviewDetection(byte[] rgbaBytes, PreviewDetectionRequest request)
     {
-        Task.Run(() =>
+        try
         {
-            try
+            if (rgbaBytes == null || request.Width <= 0 || request.Height <= 0 || rgbaBytes.Length < request.Width * request.Height * 4)
             {
-                if (rgbaBytes == null || request.Width <= 0 || request.Height <= 0 || rgbaBytes.Length < request.Width * request.Height * 4)
-                {
-                    RaisePreviewDetectionCompleted(request, new FaceLandmarkResult());
-                    return;
-                }
-
-                var bitmap = GetOrCreateLiveBitmap(request.Width, request.Height);
-                var pixels = GetOrCreateLivePixels(request.Width, request.Height);
-                int pixelCount = request.Width * request.Height;
-                var convertStopwatch = Stopwatch.StartNew();
-
-                for (int src = 0, dst = 0; dst < pixelCount; src += 4, dst++)
-                {
-                    int r = rgbaBytes[src + 0];
-                    int g = rgbaBytes[src + 1];
-                    int b = rgbaBytes[src + 2];
-                    int a = rgbaBytes[src + 3];
-                    pixels[dst] = (a << 24) | (r << 16) | (g << 8) | b;
-                }
-
-                bitmap.SetPixels(pixels, 0, request.Width, 0, 0, request.Width, request.Height);
-
-                var mpImage = new BitmapImageBuilder(bitmap).Build();
-                convertStopwatch.Stop();
-
-                BeginPendingPreviewDetection(request, convertStopwatch.Elapsed.TotalMilliseconds);
-
-                var timestampMs = Interlocked.Increment(ref _videoTimestampMs);
-                GetLandmarker().DetectAsync(mpImage, timestampMs);
+                RaisePreviewDetectionCompleted(request, new FaceLandmarkResult());
+                return;
             }
-            catch (Exception ex)
+
+            var bitmap = GetOrCreateLiveBitmap(request.Width, request.Height);
+            var pixels = GetOrCreateLivePixels(request.Width, request.Height);
+            int pixelCount = request.Width * request.Height;
+            var convertStopwatch = Stopwatch.StartNew();
+
+            for (int src = 0, dst = 0; dst < pixelCount; src += 4, dst++)
             {
-                RaisePreviewDetectionFailed(request, ex);
+                int r = rgbaBytes[src + 0];
+                int g = rgbaBytes[src + 1];
+                int b = rgbaBytes[src + 2];
+                int a = rgbaBytes[src + 3];
+                pixels[dst] = (a << 24) | (r << 16) | (g << 8) | b;
             }
-        });
+
+            bitmap.SetPixels(pixels, 0, request.Width, 0, 0, request.Width, request.Height);
+
+            var mpImage = new BitmapImageBuilder(bitmap).Build();
+            convertStopwatch.Stop();
+
+            BeginPendingPreviewDetection(request, convertStopwatch.Elapsed.TotalMilliseconds);
+
+            var timestampMs = Interlocked.Increment(ref _videoTimestampMs);
+            GetLandmarker().DetectAsync(mpImage, timestampMs);
+        }
+        catch (Exception ex)
+        {
+            RaisePreviewDetectionFailed(request, ex);
+        }
     }
 
     private void ResetLandmarker()
@@ -224,6 +223,7 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
             pendingDetection.Height,
             pendingDetection.ConversionMilliseconds,
             Stopwatch.GetElapsedTime(pendingDetection.InferenceStartTicks).TotalMilliseconds,
+            pendingDetection.Request?.LandmarkDetail ?? PreviewLandmarkDetail.Full,
             _usingGpuDelegate);
 
         if (pendingDetection.Completion != null)
@@ -304,12 +304,14 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
         int height,
         double conversionMilliseconds,
         double inferenceMilliseconds,
+        PreviewLandmarkDetail landmarkDetail,
         bool usedGpuDelegate)
     {
         var faceLandmarks = result?.FaceLandmarks();
         var faces = faceLandmarks != null
             ? new List<DetectedFace>(faceLandmarks.Count)
             : new List<DetectedFace>();
+        var mappingStopwatch = Stopwatch.StartNew();
         try
         {
             if (faceLandmarks is not null)
@@ -320,7 +322,7 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
                 // Dispose each wrapper immediately after extracting the managed float values.
                 foreach (var landmarkList in faceLandmarks)
                 {
-                    faces.Add(MapDetectedFace(landmarkList));
+                    faces.Add(MapDetectedFace(landmarkList, landmarkDetail));
                     (landmarkList as IDisposable)?.Dispose();
                 }
             }
@@ -329,6 +331,7 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
         {
             (faceLandmarks as IDisposable)?.Dispose();
         }
+        mappingStopwatch.Stop();
 
         return new FaceLandmarkResult
         {
@@ -337,18 +340,57 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
             ImageHeight = height,
             ConversionMilliseconds = conversionMilliseconds,
             InferenceMilliseconds = inferenceMilliseconds,
+            ResultMappingMilliseconds = mappingStopwatch.Elapsed.TotalMilliseconds,
             UsedGpuDelegate = usedGpuDelegate,
         };
     }
 
-    private static DetectedFace MapDetectedFace(System.Collections.Generic.IList<global::MediaPipe.Tasks.Components.Containers.NormalizedLandmark> landmarkList)
+    private static DetectedFace MapDetectedFace(
+        System.Collections.Generic.IList<global::MediaPipe.Tasks.Components.Containers.NormalizedLandmark> landmarkList,
+        PreviewLandmarkDetail landmarkDetail)
     {
+        if (landmarkDetail == PreviewLandmarkDetail.Lite)
+        {
+            return MapLiteDetectedFace(landmarkList);
+        }
+
         var points = new List<NormalizedPoint>(landmarkList.Count);
         for (int landmarkIndex = 0; landmarkIndex < landmarkList.Count; landmarkIndex++)
         {
-            var lm = landmarkList[landmarkIndex];
-            points.Add(new NormalizedPoint(lm.X(), lm.Y()));
-            (lm as IDisposable)?.Dispose();
+            var landmark = landmarkList[landmarkIndex];
+            points.Add(new NormalizedPoint(landmark.X(), landmark.Y()));
+            (landmark as IDisposable)?.Dispose();
+        }
+
+        return new DetectedFace { Landmarks = points };
+    }
+
+    private static DetectedFace MapLiteDetectedFace(System.Collections.Generic.IList<global::MediaPipe.Tasks.Components.Containers.NormalizedLandmark> landmarkList)
+    {
+        int sourceCount = landmarkList.Count;
+        if (sourceCount == 0)
+            return new DetectedFace { Landmarks = [] };
+
+        int sampledCount = ((sourceCount - 1) / LitePreviewLandmarkStride) + 1;
+        bool includeLast = (sourceCount - 1) % LitePreviewLandmarkStride != 0;
+        if (includeLast)
+        {
+            sampledCount++;
+        }
+
+        var points = new List<NormalizedPoint>(sampledCount);
+        for (int landmarkIndex = 0; landmarkIndex < sourceCount; landmarkIndex += LitePreviewLandmarkStride)
+        {
+            var landmark = landmarkList[landmarkIndex];
+            points.Add(new NormalizedPoint(landmark.X(), landmark.Y()));
+            (landmark as IDisposable)?.Dispose();
+        }
+
+        if (includeLast)
+        {
+            var lastLandmark = landmarkList[sourceCount - 1];
+            points.Add(new NormalizedPoint(lastLandmark.X(), lastLandmark.Y()));
+            (lastLandmark as IDisposable)?.Dispose();
         }
 
         return new DetectedFace { Landmarks = points };

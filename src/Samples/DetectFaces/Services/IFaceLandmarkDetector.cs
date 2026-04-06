@@ -11,13 +11,20 @@ public interface IFaceLandmarkDetector
     void EnqueuePreviewDetection(byte[] rgbaBytes, PreviewDetectionRequest request);
 }
 
+public enum PreviewLandmarkDetail
+{
+    Full,
+    Lite,
+}
+
 public sealed record PreviewDetectionRequest(
     int Width,
     int Height,
     int Rotation,
     double ResizeMilliseconds,
     bool ReusedCachedFrame,
-    long EnqueuedAtTicks);
+    long EnqueuedAtTicks,
+    PreviewLandmarkDetail LandmarkDetail = PreviewLandmarkDetail.Full);
 
 public sealed class PreviewDetectionCompletedEventArgs : EventArgs
 {

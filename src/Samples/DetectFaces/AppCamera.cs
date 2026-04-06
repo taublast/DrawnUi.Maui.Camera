@@ -450,7 +450,8 @@ namespace CameraTests.UI
                         request.Rotation,
                         request.ResizeMilliseconds,
                         request.ReusedCachedFrame,
-                        Stopwatch.GetTimestamp()));
+                        Stopwatch.GetTimestamp(),
+                        GetPreviewLandmarkDetail()));
             }
             catch (Exception ex)
             {
@@ -460,6 +461,19 @@ namespace CameraTests.UI
                     PreviewDetectionFailed?.Invoke(this, ex);
                 });
             }
+        }
+
+        /// <summary>
+        /// Chooses how much landmark detail preview detection should materialize for the current draw mode.
+        /// Full landmark meshes are expensive to marshal on Android, so landmark-dot preview uses a lighter
+        /// subset while rectangle and mask modes keep the full mesh they depend on.
+        /// </summary>
+        /// <returns>The preview landmark detail level requested from the detector.</returns>
+        private PreviewLandmarkDetail GetPreviewLandmarkDetail()
+        {
+            return DrawMode == DetectionType.Landmark
+                ? PreviewLandmarkDetail.Lite
+                : PreviewLandmarkDetail.Full;
         }
 
         /// <summary>
