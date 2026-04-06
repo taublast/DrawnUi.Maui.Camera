@@ -1,0 +1,1579 @@
+using DrawnUi.Camera;
+using SkiaSharp;
+using System.Diagnostics;
+using TestFaces.Services;
+ 
+
+namespace CameraTests.UI
+{
+    public partial class AppCamera : SkiaCamera
+    {
+        /// <summary>
+        /// Performance control:
+        ///
+        /// Example:
+        ///
+        /// raw preview is 1280x720, MlMaxDimension = 192
+        /// scaled ML frame becomes about 192x108
+        /// 
+        /// If raw preview is portrait 720x1280
+        /// scaled ML frame becomes about 108x192
+        ///
+        /// </summary>
+        /// <summary>
+        /// Base maximum dimension for frames sent to the detector when no tracked face state is available.
+        /// Higher values preserve more detail but increase detector input size and processing cost.
+        /// </summary>
+        private const int DefaultMlMaxDimension = 128;
+
+        /// <summary>
+        /// Reduced maximum detector input size used while one face is already tracked.
+        /// Lower values cut reacquisition cost, but overly small values can reduce landmark stability.
+        /// </summary>
+        private const int DefaultTrackedSingleFaceMlMaxDimension = 96;
+
+        /// <summary>
+        /// Reduced maximum detector input size used while multiple faces are already tracked.
+        /// This stays slightly larger than single-face mode to preserve more detail across several faces.
+        /// </summary>
+        private const int DefaultTrackedMultiFaceMlMaxDimension = 112;
+
+        /// <summary>
+        /// Time constant for overlay interpolation toward the latest detected landmarks.
+        /// Higher values make masks smoother but laggier; lower values make them more responsive but twitchier.
+        /// Values around 10-16 ms remove most visible landmark buzz while keeping the mask responsive.
+        /// </summary>
+        private const double DefaultOverlaySmoothingMs = 16;
+
+        /// <summary>
+        /// Normalized per-landmark deadzone applied before overlay interpolation.
+        /// Tiny detector noise inside this threshold is ignored so a still face does not visibly tremble.
+        /// </summary>
+        private const float DefaultOverlayDeadzone = 0.007f;
+
+        private readonly byte[][] _mlFrameBuffers = [Array.Empty<byte>(), Array.Empty<byte>()];
+        private bool _hasCachedMlFrame;
+        private int _cachedMlWidth;
+        private int _cachedMlHeight;
+        private int _cachedMlRotation;
+        private readonly object _detectionSync = new();
+        private bool _stopDetectionWorker;
+        private int _activeDetectionBufferIndex = -1;
+        private PendingDetectionRequest? _queuedDetectionRequest;
+
+        public AppCamera()
+        {
+            //set defaults for this camera, we set base to be able to do video recording with sound
+            NeedPermissionsSet = NeedPermissions.Camera | NeedPermissions.Gallery | NeedPermissions.Microphone;
+
+            //GPS metadata
+            //this.InjectGpsLocation = true;
+
+            //audio 
+            this.EnableAudioMonitoring = false;
+            Facing = CameraPosition.Selfie;
+
+            ProcessFrame = OnFrameProcessing;
+            ProcessPreview = OnFrameProcessing;
+            this.UseRealtimeVideoProcessing = true;
+
+#if DEBUG
+            VideoDiagnosticsOn = true;
+#endif
+        }
+
+        private IFaceLandmarkDetector? _detector;
+
+        public IFaceLandmarkDetector? Detector
+        {
+            get => _detector;
+            set
+            {
+                if (ReferenceEquals(_detector, value))
+                    return;
+
+                if (_detector != null)
+                {
+                    _detector.PreviewDetectionCompleted -= OnDetectorPreviewDetectionCompleted;
+                    _detector.PreviewDetectionFailed -= OnDetectorPreviewDetectionFailed;
+                }
+
+                _detector = value;
+
+                if (_detector != null)
+                {
+                    _detector.PreviewDetectionCompleted += OnDetectorPreviewDetectionCompleted;
+                    _detector.PreviewDetectionFailed += OnDetectorPreviewDetectionFailed;
+                }
+
+                ApplyDetectorSettings();
+            }
+        }
+
+        public DetectionType DrawMode { get; set; } = DetectionType.Landmark;
+
+        public bool EnablePreviewDetection { get; set; } = true;
+
+        public bool ReuseFirstMlFrameForPreviewDetection { get; set; } = false;
+
+        public int MaxNumFaces
+        {
+            get => _maxNumFaces;
+            set
+            {
+                _maxNumFaces = Math.Max(1, value);
+                ApplyDetectorSettings();
+            }
+        }
+
+        public int MlMaxDimension { get; set; } = DefaultMlMaxDimension;
+
+        public int TrackedSingleFaceMlMaxDimension { get; set; } = DefaultTrackedSingleFaceMlMaxDimension;
+
+        public int TrackedMultiFaceMlMaxDimension { get; set; } = DefaultTrackedMultiFaceMlMaxDimension;
+
+        public double OverlaySmoothingMs { get; set; } = DefaultOverlaySmoothingMs;
+
+        public float OverlayDeadzone { get; set; } = DefaultOverlayDeadzone;
+
+        /// <summary>
+        /// Enables time-based interpolation between detector updates.
+        /// Disable this temporarily to see the raw detector pose with only deadzone-based still-face stabilization.
+        /// </summary>
+        public bool EnableOverlayInterpolation { get; set; } = false;
+
+        public event EventHandler<FaceLandmarkResult>? PreviewDetectionUpdated;
+
+        public event EventHandler<PreviewDetectionMetrics>? PreviewDetectionMeasured;
+
+        public event EventHandler<Exception>? PreviewDetectionFailed;
+
+        private int _maxNumFaces = 2;
+
+        private void ApplyDetectorSettings()
+        {
+            if (_detector != null)
+            {
+                _detector.MaxFaces = _maxNumFaces;
+            }
+        }
+
+        public async Task SetMaskConfigurationAsync(MaskConfiguration? config)
+        {
+            ActiveMaskConfig = config;
+
+            if (config == null || string.IsNullOrWhiteSpace(config.Filename))
+            {
+                MaskBitmap?.Dispose();
+                MaskBitmap = null;
+                return;
+            }
+
+            using var stream = await FileSystem.OpenAppPackageFileAsync(config.Filename);
+            using var managed = new MemoryStream();
+            await stream.CopyToAsync(managed);
+            managed.Position = 0;
+
+            MaskBitmap?.Dispose();
+            MaskBitmap = SKBitmap.Decode(managed);
+        }
+
+
+
+
+        public override void OnDisposing()
+        {
+            Detector = null;
+            StopDetectionWorker();
+            base.OnDisposing();
+        }
+
+        public static readonly BindableProperty UseGainProperty = BindableProperty.Create(
+            nameof(UseGain),
+            typeof(bool),
+            typeof(AppCamera),
+            false);
+
+        public bool UseGain
+        {
+            get => (bool)GetValue(UseGainProperty);
+            set => SetValue(UseGainProperty, value);
+        }
+
+        /// <summary>
+        /// Gain multiplier applied to raw PCM when UseGain is true.
+        /// </summary>
+        public float GainFactor { get; set; } = 3.0f;
+
+
+
+        public event Action<AudioSample>? OnAudioSample; 
+
+        protected override AudioSample OnAudioSampleAvailable(AudioSample sample)
+        {
+            if (UseGain && sample.Data != null && sample.Data.Length > 1)
+            {
+                AmplifyPcm16(sample.Data, GainFactor);
+            }
+
+            OnAudioSample?.Invoke(sample);
+
+            return base.OnAudioSampleAvailable(sample);
+        }
+
+        /// <summary>
+        /// Amplifies PCM16 audio data in-place. Zero allocations.
+        /// </summary>
+        private static void AmplifyPcm16(byte[] data, float gain)
+        {
+            for (int i = 0; i < data.Length - 1; i += 2)
+            {
+                int sample = (short)(data[i] | (data[i + 1] << 8));
+                sample = (int)(sample * gain);
+
+                // Clamp to 16-bit range
+                if (sample > 32767) sample = 32767;
+                else if (sample < -32768) sample = -32768;
+
+                data[i] = (byte)(sample & 0xFF);
+                data[i + 1] = (byte)((sample >> 8) & 0xFF);
+            }
+        }
+
+        public override void OnWillDisposeWithChildren()
+        {
+            base.OnWillDisposeWithChildren();
+
+            _paintRec?.Dispose();
+            _paintRec = null;
+            _paintPreview?.Dispose();
+            _paintPreview = null;
+            _detectionStrokePaint?.Dispose();
+            _detectionStrokePaint = null;
+            _detectionFillPaint?.Dispose();
+            _detectionFillPaint = null;
+            _maskPaint?.Dispose();
+            _maskPaint = null;
+            MaskBitmap?.Dispose();
+            MaskBitmap = null;
+            _filtersX = null;
+            _filtersY = null;
+        }
+
+        protected override void OnRawFrameAcquired(SKImage rawImage, int rotation)
+        {
+            base.OnRawFrameAcquired(rawImage, rotation);
+
+            if (!EnablePreviewDetection || Detector == null)
+                return;
+
+            PendingDetectionRequest? requestToSubmit = null;
+            IFaceLandmarkDetector? detector = null;
+
+            try
+            {
+                lock (_detectionSync)
+                {
+                    if (_stopDetectionWorker || Detector == null)
+                        return;
+
+                    int targetWidth;
+                    int targetHeight;
+                    int detectionRotation;
+                    bool reusedCachedFrame = false;
+                    int writeBufferIndex = _activeDetectionBufferIndex == 0 ? 1 : 0;
+                    var resizeStopwatch = Stopwatch.StartNew();
+
+                    if (ReuseFirstMlFrameForPreviewDetection && _hasCachedMlFrame)
+                    {
+                        targetWidth = _cachedMlWidth;
+                        targetHeight = _cachedMlHeight;
+                        detectionRotation = _cachedMlRotation;
+                        reusedCachedFrame = true;
+                    }
+                    else
+                    {
+                        if (!TryPrepareMlFrame(rawImage, writeBufferIndex, out targetWidth, out targetHeight))
+                            return;
+
+                        if (!TryGetMLFrame(rawImage, targetWidth, targetHeight, _mlFrameBuffers[writeBufferIndex]))
+                            return;
+
+                        detectionRotation = rotation;
+
+                        if (ReuseFirstMlFrameForPreviewDetection)
+                        {
+                            _cachedMlWidth = targetWidth;
+                            _cachedMlHeight = targetHeight;
+                            _cachedMlRotation = rotation;
+                            _hasCachedMlFrame = true;
+                        }
+                    }
+
+                    resizeStopwatch.Stop();
+
+                    var request = new PendingDetectionRequest(
+                        writeBufferIndex,
+                        targetWidth,
+                        targetHeight,
+                        detectionRotation,
+                        resizeStopwatch.Elapsed.TotalMilliseconds,
+                        reusedCachedFrame);
+
+                    if (_activeDetectionBufferIndex >= 0)
+                    {
+                        _queuedDetectionRequest = request;
+                        return;
+                    }
+
+                    _activeDetectionBufferIndex = request.BufferIndex;
+                    detector = Detector;
+                    requestToSubmit = request;
+                }
+
+                SubmitPreviewDetection(detector, requestToSubmit);
+            }
+            catch
+            {
+                throw;
+            }
+        }
+
+        private void SubmitPreviewDetection(IFaceLandmarkDetector? detector, PendingDetectionRequest? request)
+        {
+            if (detector == null || request == null)
+                return;
+
+            try
+            {
+                detector.EnqueuePreviewDetection(
+                    _mlFrameBuffers[request.BufferIndex],
+                    new PreviewDetectionRequest(
+                        request.Width,
+                        request.Height,
+                        request.Rotation,
+                        request.ResizeMilliseconds,
+                        request.ReusedCachedFrame,
+                        Stopwatch.GetTimestamp()));
+            }
+            catch (Exception ex)
+            {
+                FinishPreviewDetection();
+                MainThread.BeginInvokeOnMainThread(() =>
+                {
+                    PreviewDetectionFailed?.Invoke(this, ex);
+                });
+            }
+        }
+
+        private void OnDetectorPreviewDetectionCompleted(object? sender, PreviewDetectionCompletedEventArgs e)
+        {
+            if (!ReferenceEquals(sender, Detector))
+                return;
+
+            var completedAtTicks = Stopwatch.GetTimestamp();
+
+            lock (_detectionSync)
+            {
+                _previousDetection = _latestDetection;
+                _latestDetection = new DetectionSnapshot(e.Result, e.Request.Rotation, completedAtTicks);
+            }
+
+            var detectionMilliseconds = Stopwatch.GetElapsedTime(e.Request.EnqueuedAtTicks, completedAtTicks).TotalMilliseconds;
+
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                PreviewDetectionMeasured?.Invoke(this, new PreviewDetectionMetrics(
+                    e.Request.ResizeMilliseconds,
+                    detectionMilliseconds,
+                    e.Request.ReusedCachedFrame,
+                    e.Request.Width,
+                    e.Request.Height,
+                    e.Request.Rotation));
+                PreviewDetectionUpdated?.Invoke(this, e.Result);
+            });
+
+            FinishPreviewDetection();
+        }
+
+        private void OnDetectorPreviewDetectionFailed(object? sender, PreviewDetectionFailedEventArgs e)
+        {
+            if (!ReferenceEquals(sender, Detector))
+                return;
+
+            FinishPreviewDetection();
+
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                PreviewDetectionFailed?.Invoke(this, e.Exception);
+            });
+        }
+
+        private void FinishPreviewDetection()
+        {
+            PendingDetectionRequest? nextRequest = null;
+            IFaceLandmarkDetector? detector = null;
+
+            lock (_detectionSync)
+            {
+                _activeDetectionBufferIndex = -1;
+
+                if (!_stopDetectionWorker && _queuedDetectionRequest != null && Detector != null)
+                {
+                    nextRequest = _queuedDetectionRequest;
+                    _queuedDetectionRequest = null;
+                    _activeDetectionBufferIndex = nextRequest.BufferIndex;
+                    detector = Detector;
+                }
+            }
+
+            SubmitPreviewDetection(detector, nextRequest);
+        }
+
+        private void StopDetectionWorker()
+        {
+            lock (_detectionSync)
+            {
+                if (_stopDetectionWorker)
+                    return;
+
+                _stopDetectionWorker = true;
+                _queuedDetectionRequest = null;
+            }
+        }
+
+        private bool TryPrepareMlFrame(SKImage? rawImage, int bufferIndex, out int targetWidth, out int targetHeight)
+        {
+            targetWidth = 0;
+            targetHeight = 0;
+
+            int sourceWidth = rawImage?.Width ?? 0;
+            int sourceHeight = rawImage?.Height ?? 0;
+
+            if (sourceWidth <= 0 || sourceHeight <= 0)
+            {
+                var format = CurrentVideoFormat;
+                if (format != null)
+                {
+                    sourceWidth = format.Width;
+                    sourceHeight = format.Height;
+                }
+            }
+
+            if (sourceWidth <= 0 || sourceHeight <= 0)
+                return false;
+
+            int maxDimension = ResolveCurrentMlMaxDimension();
+            float scale = Math.Max(sourceWidth, sourceHeight) / (float)maxDimension;
+            if (scale < 1f)
+            {
+                scale = 1f;
+            }
+
+            targetWidth = Math.Max(32, (int)Math.Round(sourceWidth / scale));
+            targetHeight = Math.Max(32, (int)Math.Round(sourceHeight / scale));
+
+            EnsureMlBufferSize(bufferIndex, targetWidth * targetHeight * 4);
+            return true;
+        }
+
+        private int ResolveCurrentMlMaxDimension()
+        {
+            DetectionSnapshot? snapshot;
+            lock (_detectionSync)
+            {
+                snapshot = _latestDetection;
+            }
+
+            int configuredMax = Math.Max(64, MlMaxDimension);
+            if (snapshot?.Result?.Faces == null || snapshot.Result.Faces.Count == 0)
+                return configuredMax;
+
+            if (snapshot.Result.Faces.Count == 1)
+                return Math.Min(configuredMax, Math.Max(64, TrackedSingleFaceMlMaxDimension));
+
+            return Math.Min(configuredMax, Math.Max(64, TrackedMultiFaceMlMaxDimension));
+        }
+
+        private void EnsureMlBufferSize(int bufferIndex, int requiredBytes)
+        {
+            if (_mlFrameBuffers[bufferIndex].Length == requiredBytes)
+                return;
+
+            _mlFrameBuffers[bufferIndex] = new byte[requiredBytes];
+        }
+
+        public void DrawOverlay(DrawableFrame frame)
+        {
+            SKPaint paint;
+            var canvas = frame.Canvas;
+            var width = frame.Width;
+            var height = frame.Height;
+            var scale = frame.Scale;
+
+            if (frame.IsPreview)
+            {
+                if (_paintPreview == null)
+                {
+                    _paintPreview = new SKPaint
+                    {
+                        IsAntialias = true,
+                    };
+                }
+                paint = _paintPreview;
+            }
+            else
+            {
+                if (_paintRec == null)
+                {
+                    _paintRec = new SKPaint
+                    {
+                        IsAntialias = true,
+                    };
+                }
+                paint = _paintRec;
+            }
+
+            paint.TextSize = 48 * scale;
+            paint.Color = IsPreRecording ? SKColors.White : SKColors.Red;
+            paint.Style = SKPaintStyle.Fill;
+
+            if (IsRecording || IsPreRecording)
+            {
+                // text at top left
+                var text = IsPreRecording ? "PRE-RECORDED" : "LIVE";
+                canvas.DrawText(text, 50 * scale, 100 * scale, paint);
+                canvas.DrawText($"{frame.Time:mm\\:ss}", 50 * scale, 160 * scale, paint);
+
+                // Draw a simple border around the frame
+                paint.Style = SKPaintStyle.Stroke;
+                paint.StrokeWidth = 4 * scale;
+                canvas.DrawRect(10 * scale, 10 * scale, width - 20 * scale, height - 20 * scale, paint);
+            }
+            else
+            {
+                paint.Color = SKColors.White;
+                var text = $"PREVIEW {this.CaptureMode}";
+                canvas.DrawText(text, 50 * scale, 100 * scale, paint);
+            }
+
+            //if (UseRealtimeVideoProcessing && EnableAudioRecording)
+            //{
+            //    _audioVisualizer?.Render(canvas, width, height, scale);
+            //}
+        }
+
+
+        #region DRAWN LAYOUT
+
+        private SKPaint? _paintPreview;
+        private SKPaint? _paintRec;
+        private SKPaint? _detectionStrokePaint;
+        private SKPaint? _detectionFillPaint;
+        private SKPaint? _maskPaint;
+        private SKBitmap? MaskBitmap;
+        private MaskConfiguration? ActiveMaskConfig;
+        private DetectionSnapshot? _latestDetection;
+        private DetectionSnapshot? _previousDetection;
+        private RenderedDetectionState? _renderedDetection;
+        private DetectionSnapshot? _lastConsumedTarget;
+        private OneEuroFilter[]? _filtersX;
+        private OneEuroFilter[]? _filtersY;
+        private long _lastRenderedDetectionUpdateTicks;
+
+        /// <summary>
+        /// When true, landmark positions are extrapolated forward from the latest detection
+        /// using the velocity between the two most recent detections. This compensates for
+        /// MediaPipe's async pipeline latency (~65–85 ms) and makes overlays track moving
+        /// faces much more closely. Set to false to observe raw (uncompensated) positions.
+        /// </summary>
+        public bool EnablePrediction { get; set; } = false;
+
+        /// <summary>
+        /// Enables One Euro Filter for landmark stabilization.
+        /// Adaptively smooths landmarks: strong filtering when still, minimal lag when moving.
+        /// When enabled, replaces the deadzone + interpolation smoothing path.
+        /// </summary>
+        public bool EnableOneEuroFilter { get; set; } = true;
+
+        /// <summary>
+        /// Minimum cutoff frequency for the One Euro Filter (Hz).
+        /// Lower values = more smoothing when stationary. Range: 0.5–3.0.
+        /// </summary>
+        public float FilterMinCutoff { get; set; } = 1.0f;
+
+        /// <summary>
+        /// Speed coefficient for the One Euro Filter.
+        /// Higher values = less lag during fast movement. Range: 0.0–1.0.
+        /// </summary>
+        public float FilterBeta { get; set; } = 15.0f;
+
+        /// <summary>
+        /// Derivative cutoff frequency for the One Euro Filter (Hz).
+        /// </summary>
+        public float FilterDCutoff { get; set; } = 1.0f;
+
+        private DeviceOrientation _orientation;
+        private float _previewScale;
+        private float _renderedScale;
+        private SKRect _rectFramePreview;
+        private SKRect _rectFrameRecording;
+        private float _overlayScale = 1;
+        private float _overlayScaleChanged = -1;
+        private VideoFormat? _adaptedToFormat;
+        private DeviceOrientation _rectOrientation = DeviceOrientation.Unknown;
+        private DeviceOrientation _rectOrientationLocked = DeviceOrientation.Unknown;
+        public bool LockOrientation { get; set; }
+
+        float GetOverlayBaseDivider(float smallSize)
+        {
+            var setting = smallSize;
+            return setting switch
+            {
+                0 => 1920f,   // Default 1080p max dimension
+                720 => 1280f,   // 1280x720 max
+                1080 => 1920f,  // 1920x1080 max
+                1440 => 2560f,  // 2560x1440 max
+                2160 => 3840f,  // 3840x2160 max
+                4320 => 7680f,  // 7680x4320 max
+                _ => 1920f
+            };
+        }
+
+        void AdjustOverlayScale()
+        {
+            var format = this.CurrentVideoFormat;
+            if (format == null)
+            {
+                _overlayScaleChanged = -1;
+                return;
+            }
+            var (formatWidth, formatHeight) = this.GetRotationCorrectedDimensions(format.Width, format.Height);
+            var baseDivider = GetOverlayBaseDivider(Math.Min(format.Width, format.Height));
+            _overlayScaleChanged = Math.Max(formatWidth, formatHeight) / baseDivider;
+        }
+
+        void OnFrameProcessing(DrawableFrame frame)
+        {
+            bool DrawOverlay(SkiaLayout layout, bool skipRendering)
+            {
+
+                if (this.CurrentVideoFormat != _adaptedToFormat)
+                {
+                    _adaptedToFormat = this.CurrentVideoFormat;
+                    AdjustOverlayScale();
+                }
+
+                if (_overlayScale != _overlayScaleChanged)
+                {
+                    _overlayScale = _overlayScaleChanged;
+                    _rectFramePreview = SKRect.Empty;
+                    _rectFrameRecording = SKRect.Empty;
+                }
+
+                if (frame.IsPreview && frame.Scale != _previewScale)
+                {
+                    _rectFramePreview = SKRect.Empty;
+                    _previewScale = frame.Scale;
+                }
+
+                var k = _overlayScale;
+                var overlayScale = 3 * frame.Scale * k;
+
+                if (_rectOrientation != _orientation && !LockOrientation)
+                {
+                    _rectFramePreview = SKRect.Empty;
+                    _rectFrameRecording = SKRect.Empty;
+                    _rectOrientation = _orientation;
+                }
+
+                var orientation = _rectOrientation;
+                if (!LockOrientation)
+                {
+                    _rectOrientationLocked = DeviceOrientation.Unknown;
+                }
+                else
+                {
+                    if (_rectOrientationLocked == DeviceOrientation.Unknown)
+                    {
+                        //LOCK
+                        _rectOrientationLocked = _rectOrientation;
+                    }
+                    orientation = _rectOrientationLocked;
+                }
+
+                var frameRect = new SKRect(0, 0, frame.Width, frame.Height); ;
+                var rectLimits = frameRect;
+
+                if (frame.IsPreview && _rectFramePreview == SKRect.Empty)
+                {
+                    _rectFramePreview = frameRect;
+                    if (!layout.NeedMeasure)
+                    {
+                        layout.Invalidate();
+                    }
+
+                }
+                else
+                    if (!frame.IsPreview && _rectFrameRecording == SKRect.Empty)
+                    {
+                        _rectFrameRecording = frameRect;
+                        if (!layout.NeedMeasure)
+                        {
+                            layout.Invalidate();
+                        }
+                    }
+
+                if (orientation == DeviceOrientation.LandscapeLeft || orientation == DeviceOrientation.LandscapeRight)
+                {
+                    layout.AnchorX = 0;
+                    layout.AnchorY = 0;
+
+                    rectLimits = new SKRect(
+                        rectLimits.Top,
+                        rectLimits.Left,
+                        rectLimits.Top + rectLimits.Height,
+                        rectLimits.Left + rectLimits.Width
+                    );
+                }
+                else
+                {
+                    layout.TranslationX = 0;
+                    layout.TranslationY = 0;
+                    layout.Rotation = 0;
+                }
+
+                //tune up a bit
+                //overlayScale *= 0.9f;
+
+                bool wasMeasured = false;
+
+                if (layout.NeedMeasure)
+                {
+                    if (orientation == DeviceOrientation.LandscapeLeft || orientation == DeviceOrientation.LandscapeRight)
+                    {
+                        if (orientation == DeviceOrientation.LandscapeLeft)
+                        {
+                            layout.TranslationX = frameRect.Width / overlayScale - rectLimits.Left / overlayScale;
+                            layout.TranslationY = rectLimits.Left / overlayScale; //rotated side offset
+                            layout.Rotation = 90;
+                        }
+                        else // LandscapeRight
+                        {
+                            layout.TranslationX = -rectLimits.Left / overlayScale;
+                            layout.TranslationY = frameRect.Height / overlayScale - rectLimits.Left / overlayScale;
+                            layout.Rotation = -90;
+                        }
+
+                        var measured = layout.Measure(frameRect.Height, frameRect.Width, overlayScale);
+                    }
+                    else
+                    {
+                        var measured = layout.Measure(frameRect.Width, frameRect.Height, overlayScale);
+                    }
+                    layout.Arrange(
+                        new SKRect(0, 0, layout.MeasuredSize.Pixels.Width, layout.MeasuredSize.Pixels.Height),
+                        layout.MeasuredSize.Pixels.Width, layout.MeasuredSize.Pixels.Height, overlayScale);
+
+                    wasMeasured = true;
+                }
+
+                var ctx = new SkiaDrawingContext()
+                {
+                    Canvas = frame.Canvas,
+                    Width = frame.Width,
+                    Height = frame.Height,
+                    Superview = this.Superview  //to enable animations and use disposal manager
+                };
+
+                if (!skipRendering)
+                {
+                    layout.Render(new DrawingContext(ctx, rectLimits, overlayScale));
+                    _renderedScale = overlayScale;
+                }
+
+                return wasMeasured;
+            }
+
+            // Simple text overlay for testing
+            if (_paintRec == null)
+            {
+                _paintRec = new SKPaint
+                {
+                    IsAntialias = true,
+                };
+            }
+            if (_paintPreview == null)
+            {
+                _paintPreview = new SKPaint
+                {
+                    IsAntialias = true,
+                    Color = SKColors.Fuchsia
+                };
+            }
+
+            var paint = frame.IsPreview ? _paintPreview : _paintRec;
+            paint.TextSize = 32 * frame.Scale;
+            paint.Style = SKPaintStyle.Fill;
+
+            // text at top left
+            var text = string.Empty;
+            var text2 = string.Empty;
+
+            if (this.IsPreRecording)
+            {
+                text = "PRE";
+                text2 = $"{frame.Time:mm\\:ss}";
+                paint.Color = SKColors.White;
+            }
+            else
+            if (this.IsRecording)
+            {
+                text = "LIVE";
+                text2 = $"{frame.Time:mm\\:ss}";
+                paint.Color = SKColors.Red;
+            }
+            else
+            {
+                paint.Color = SKColors.Transparent;
+                //text = $"{this.CurrentVideoFormat.Width}x{this.CurrentVideoFormat.Height} ({frame.Width}x{frame.Height}) x{_renderedScale:0.00}";
+                //text = $"{frame.Width}x{frame.Height}";
+            }
+
+            //if (_labelRec != null)
+            //{
+            //    _labelRec.Text = CameraControl.IsPreRecording ? "PRE" : "REC";
+            //}
+
+            if (OverlayPreview != null && frame.IsPreview) //PREVIEW small frame
+            {
+                DrawOverlay(OverlayPreview, false);
+            }
+            else
+            if (OverlayRecording != null && !frame.IsPreview) //RAW frame being recorded
+            {
+                DrawOverlay(OverlayRecording, false);
+            }
+
+            //if (frame.IsPreview)
+            {
+                // draw frame indicator
+                if (paint.Color != SKColors.Transparent)
+                {
+                    paint.Style = SKPaintStyle.Stroke;
+                    paint.StrokeWidth = 2 * frame.Scale;
+                    frame.Canvas.DrawRect(10 * frame.Scale, 10 * frame.Scale, frame.Width - 20 * frame.Scale, frame.Height - 20 * frame.Scale, paint);
+                }
+
+                if (!string.IsNullOrEmpty(text))
+                {
+                    paint.TextSize = 48 * frame.Scale;
+                    paint.Color = IsPreRecording ? SKColors.White : SKColors.Red;
+                    paint.Style = SKPaintStyle.Fill;
+
+                    if (IsRecording || IsPreRecording)
+                    {
+                        // text at top left
+                        frame.Canvas.DrawText(text, 50 * frame.Scale, 100 * frame.Scale, paint);
+                        frame.Canvas.DrawText(text2, 50 * frame.Scale, 160 * frame.Scale, paint);
+                    }
+                    else
+                    {
+                        paint.Color = SKColors.White;
+                        frame.Canvas.DrawText(text, 50 * frame.Scale, 100 * frame.Scale, paint);
+                    }
+                }
+            }
+
+            DrawDetectionOverlay(frame);
+        }
+
+        private void DrawDetectionOverlay(DrawableFrame frame)
+        {
+            var rendered = GetRenderedDetectionState();
+            if (rendered == null || rendered.Faces.Count == 0)
+                return;
+
+            EnsureDetectionPaints(frame.Scale);
+
+            foreach (var face in rendered.Faces)
+            {
+                if (DrawMode == DetectionType.Rectangle)
+                {
+                    DrawFaceRectangle(frame, face, rendered.Rotation);
+                }
+                else if (DrawMode == DetectionType.Mask && MaskBitmap != null)
+                {
+                    DrawFaceMask(frame, face, rendered.Rotation);
+                }
+                else
+                {
+                    DrawFaceLandmarks(frame, face, rendered.Rotation);
+                }
+            }
+        }
+
+        private RenderedDetectionState? GetRenderedDetectionState()
+        {
+            lock (_detectionSync)
+            {
+                var target = _latestDetection;
+                if (target?.Result == null || target.Result.Faces.Count == 0)
+                {
+                    _renderedDetection = null;
+                    _lastRenderedDetectionUpdateTicks = 0;
+                    _lastConsumedTarget = null;
+                    _filtersX = null;
+                    _filtersY = null;
+                    return null;
+                }
+
+                var nowTicks = Stopwatch.GetTimestamp();
+
+                // Fast path: prediction is off, the detection hasn't changed, and smoothing
+                // has already converged — return the cached result without any allocation.
+                if (!EnablePrediction
+                    && ReferenceEquals(target, _lastConsumedTarget)
+                    && _renderedDetection != null)
+                {
+                    return _renderedDetection;
+                }
+
+                // Extrapolate ahead of the latest detection using inter-detection velocity.
+                // This compensates for pipeline latency so the overlay tracks the live face
+                // rather than where it was when the frame was captured.
+                var predicted = EnablePrediction
+                    ? ComputePredictedDetection(_previousDetection, target, nowTicks)
+                    : target;
+
+                // One Euro Filter path — smooth movement for masks (hats, face overlays).
+                // Dots and rectangles use the zero-lag per-landmark deadzone path below.
+                if (EnableOneEuroFilter && DrawMode == DetectionType.Mask)
+                {
+                    if (_renderedDetection == null || _filtersX == null || !CanSmoothRenderedDetection(_renderedDetection, predicted))
+                    {
+                        _renderedDetection = CreateRenderedDetectionState(predicted);
+                        InitializeLandmarkFilters(predicted, nowTicks);
+                        _lastRenderedDetectionUpdateTicks = nowTicks;
+                        _lastConsumedTarget = target;
+                        return _renderedDetection;
+                    }
+
+                    if (!EnablePrediction && ReferenceEquals(target, _lastConsumedTarget))
+                        return _renderedDetection;
+
+                    ApplyOneEuroFilters(predicted, _renderedDetection, nowTicks);
+                    _lastRenderedDetectionUpdateTicks = nowTicks;
+                    _lastConsumedTarget = target;
+                    return _renderedDetection;
+                }
+
+                // Per-landmark deadzone path (zero-lag, for dots/rectangles)
+                // Reset filter state so switching back to Mask starts fresh
+                _filtersX = null;
+                _filtersY = null;
+
+                if (_renderedDetection == null || !CanSmoothRenderedDetection(_renderedDetection, predicted))
+                {
+                    _renderedDetection = CreateRenderedDetectionState(predicted);
+                    _lastRenderedDetectionUpdateTicks = nowTicks;
+                    _lastConsumedTarget = target;
+                    return _renderedDetection;
+                }
+
+                if (!EnableOverlayInterpolation)
+                {
+                    CopyWithPerLandmarkDeadzone(predicted, _renderedDetection, OverlayDeadzone);
+
+                    _lastRenderedDetectionUpdateTicks = nowTicks;
+                    _lastConsumedTarget = target;
+                    return _renderedDetection;
+                }
+
+                var smoothingFactor = ComputeOverlaySmoothingFactor(nowTicks);
+                if (smoothingFactor >= 1f)
+                {
+                    CopyDetectionSnapshotToRenderedState(predicted, _renderedDetection);
+                    _lastConsumedTarget = target; // mark converged so fast path can skip next frames
+                }
+                else if (smoothingFactor > 0f)
+                {
+                    InterpolateRenderedStateTowardsSnapshot(_renderedDetection, predicted, smoothingFactor, OverlayDeadzone);
+                }
+
+                _lastRenderedDetectionUpdateTicks = nowTicks;
+                return _renderedDetection;
+            }
+        }
+
+        /// <summary>
+        /// Extrapolates landmark positions from <paramref name="target"/> using the velocity
+        /// computed between <paramref name="previous"/> and <paramref name="target"/>.
+        /// The extrapolation distance equals the time elapsed since <paramref name="target"/>
+        /// was delivered, capped at two detection intervals to limit overshoot.
+        /// </summary>
+        private static DetectionSnapshot ComputePredictedDetection(
+            DetectionSnapshot? previous,
+            DetectionSnapshot target,
+            long nowTicks)
+        {
+            if (previous == null || !CanSmoothDetections(previous, target))
+                return target;
+
+            var sampleDtMs = Stopwatch.GetElapsedTime(previous.CompletedAtTicks, target.CompletedAtTicks).TotalMilliseconds;
+            if (sampleDtMs <= 0)
+                return target;
+
+            var elapsedMs = Stopwatch.GetElapsedTime(target.CompletedAtTicks, nowTicks).TotalMilliseconds;
+            if (elapsedMs <= 0)
+                return target;
+
+            // Cap at 2× detection interval to avoid extreme overshoot on direction changes.
+            var predictMs = Math.Min(elapsedMs, sampleDtMs * 1.5); //todo tune down to 1.0
+            var alpha = (float)(predictMs / sampleDtMs);
+            if (alpha < 0.01f)
+                return target;
+
+            return ExtrapolateDetectionSnapshot(previous, target, alpha, nowTicks);
+        }
+
+        /// <summary>
+        /// Extrapolates beyond <paramref name="target"/> by <paramref name="alpha"/> multiples
+        /// of the (previous → target) delta: predicted = target + alpha * (target − previous).
+        /// </summary>
+        private static DetectionSnapshot ExtrapolateDetectionSnapshot(
+            DetectionSnapshot previous,
+            DetectionSnapshot target,
+            float alpha,
+            long completedAtTicks)
+        {
+            var faces = new List<DetectedFace>(target.Result.Faces.Count);
+            for (int f = 0; f < target.Result.Faces.Count; f++)
+            {
+                var prevFace = previous.Result.Faces[f];
+                var targetFace = target.Result.Faces[f];
+                var points = new List<NormalizedPoint>(targetFace.Landmarks.Count);
+
+                for (int i = 0; i < targetFace.Landmarks.Count; i++)
+                {
+                    var p = prevFace.Landmarks[i];
+                    var t = targetFace.Landmarks[i];
+                    points.Add(new NormalizedPoint(
+                        t.X + alpha * (t.X - p.X),
+                        t.Y + alpha * (t.Y - p.Y)));
+                }
+
+                faces.Add(new DetectedFace { Landmarks = points });
+            }
+
+            return new DetectionSnapshot(
+                new FaceLandmarkResult
+                {
+                    Faces = faces,
+                    ImageWidth = target.Result.ImageWidth,
+                    ImageHeight = target.Result.ImageHeight,
+                    ConversionMilliseconds = target.Result.ConversionMilliseconds,
+                    InferenceMilliseconds = target.Result.InferenceMilliseconds,
+                    UsedGpuDelegate = target.Result.UsedGpuDelegate,
+                },
+                target.Rotation,
+                completedAtTicks);
+        }
+
+        private float ComputeOverlaySmoothingFactor(long nowTicks)
+        {
+            if (OverlaySmoothingMs <= 0)
+                return 1f;
+
+            if (_lastRenderedDetectionUpdateTicks == 0)
+                return 1f;
+
+            var elapsedMs = Stopwatch.GetElapsedTime(_lastRenderedDetectionUpdateTicks, nowTicks).TotalMilliseconds;
+            if (elapsedMs <= 0)
+                return 0f;
+
+            return (float)(1d - Math.Exp(-elapsedMs / OverlaySmoothingMs));
+        }
+
+        private static bool CanSmoothDetections(DetectionSnapshot current, DetectionSnapshot target)
+        {
+            if (current.Rotation != target.Rotation)
+                return false;
+
+            if (current.Result.Faces.Count != target.Result.Faces.Count)
+                return false;
+
+            for (int faceIndex = 0; faceIndex < current.Result.Faces.Count; faceIndex++)
+            {
+                if (current.Result.Faces[faceIndex].Landmarks.Count != target.Result.Faces[faceIndex].Landmarks.Count)
+                    return false;
+            }
+
+            return true;
+        }
+
+        private static bool CanSmoothRenderedDetection(RenderedDetectionState current, DetectionSnapshot target)
+        {
+            if (current.Rotation != target.Rotation)
+                return false;
+
+            if (current.Faces.Count != target.Result.Faces.Count)
+                return false;
+
+            for (int faceIndex = 0; faceIndex < current.Faces.Count; faceIndex++)
+            {
+                if (current.Faces[faceIndex].Landmarks.Count != target.Result.Faces[faceIndex].Landmarks.Count)
+                    return false;
+            }
+
+            return true;
+        }
+
+        private static bool IsRenderedDetectionWithinDeadzone(RenderedDetectionState current, DetectionSnapshot target, float deadzone)
+        {
+            if (deadzone <= 0f)
+                return false;
+
+            if (!CanSmoothRenderedDetection(current, target))
+                return false;
+
+            for (int faceIndex = 0; faceIndex < current.Faces.Count; faceIndex++)
+            {
+                var currentFace = current.Faces[faceIndex];
+                var targetFace = target.Result.Faces[faceIndex];
+
+                for (int landmarkIndex = 0; landmarkIndex < currentFace.Landmarks.Count; landmarkIndex++)
+                {
+                    var currentPoint = currentFace.Landmarks[landmarkIndex];
+                    var targetPoint = targetFace.Landmarks[landmarkIndex];
+
+                    if (Math.Abs(targetPoint.X - currentPoint.X) > deadzone
+                        || Math.Abs(targetPoint.Y - currentPoint.Y) > deadzone)
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        private static RenderedDetectionState CreateRenderedDetectionState(DetectionSnapshot snapshot)
+        {
+            var faces = new List<DetectedFace>(snapshot.Result.Faces.Count);
+            foreach (var sourceFace in snapshot.Result.Faces)
+            {
+                var points = new List<NormalizedPoint>(sourceFace.Landmarks.Count);
+                foreach (var point in sourceFace.Landmarks)
+                {
+                    points.Add(point);
+                }
+
+                faces.Add(new DetectedFace { Landmarks = points });
+            }
+
+            return new RenderedDetectionState(faces, snapshot.Rotation, snapshot.CompletedAtTicks);
+        }
+
+        private static void CopyDetectionSnapshotToRenderedState(DetectionSnapshot source, RenderedDetectionState destination)
+        {
+            destination.Rotation = source.Rotation;
+            destination.CompletedAtTicks = source.CompletedAtTicks;
+
+            for (int faceIndex = 0; faceIndex < destination.Faces.Count; faceIndex++)
+            {
+                var destinationLandmarks = destination.Faces[faceIndex].Landmarks;
+                var sourceLandmarks = source.Result.Faces[faceIndex].Landmarks;
+                for (int landmarkIndex = 0; landmarkIndex < destinationLandmarks.Count; landmarkIndex++)
+                {
+                    destinationLandmarks[landmarkIndex] = sourceLandmarks[landmarkIndex];
+                }
+            }
+        }
+
+        private static void InterpolateRenderedStateTowardsSnapshot(RenderedDetectionState current, DetectionSnapshot target, float amount, float deadzone)
+        {
+            current.Rotation = target.Rotation;
+            current.CompletedAtTicks = target.CompletedAtTicks;
+
+            for (int faceIndex = 0; faceIndex < target.Result.Faces.Count; faceIndex++)
+            {
+                var currentFace = current.Faces[faceIndex];
+                var targetFace = target.Result.Faces[faceIndex];
+
+                for (int landmarkIndex = 0; landmarkIndex < targetFace.Landmarks.Count; landmarkIndex++)
+                {
+                    var from = currentFace.Landmarks[landmarkIndex];
+                    var to = targetFace.Landmarks[landmarkIndex];
+
+                    float targetX = ApplyDeadzone(from.X, to.X, deadzone);
+                    float targetY = ApplyDeadzone(from.Y, to.Y, deadzone);
+
+                    currentFace.Landmarks[landmarkIndex] = new NormalizedPoint(
+                        Lerp(from.X, targetX, amount),
+                        Lerp(from.Y, targetY, amount));
+                }
+            }
+        }
+
+        private static float Lerp(float from, float to, float amount)
+        {
+            return from + ((to - from) * amount);
+        }
+
+        private static float ApplyDeadzone(float current, float target, float deadzone)
+        {
+            return Math.Abs(target - current) <= deadzone ? current : target;
+        }
+
+        private static void CopyWithPerLandmarkDeadzone(DetectionSnapshot source, RenderedDetectionState destination, float deadzone)
+        {
+            destination.Rotation = source.Rotation;
+            destination.CompletedAtTicks = source.CompletedAtTicks;
+
+            for (int f = 0; f < destination.Faces.Count; f++)
+            {
+                var dstLandmarks = destination.Faces[f].Landmarks;
+                var srcLandmarks = source.Result.Faces[f].Landmarks;
+
+                for (int i = 0; i < dstLandmarks.Count; i++)
+                {
+                    var dst = dstLandmarks[i];
+                    var src = srcLandmarks[i];
+
+                    float x = Math.Abs(src.X - dst.X) > deadzone ? src.X : dst.X;
+                    float y = Math.Abs(src.Y - dst.Y) > deadzone ? src.Y : dst.Y;
+
+                    dstLandmarks[i] = new NormalizedPoint(x, y);
+                }
+            }
+        }
+
+        private void InitializeLandmarkFilters(DetectionSnapshot snapshot, long nowTicks)
+        {
+            int total = 0;
+            foreach (var face in snapshot.Result.Faces)
+                total += face.Landmarks.Count;
+
+            _filtersX = new OneEuroFilter[total];
+            _filtersY = new OneEuroFilter[total];
+
+            int idx = 0;
+            foreach (var face in snapshot.Result.Faces)
+            {
+                foreach (var pt in face.Landmarks)
+                {
+                    _filtersX[idx] = new OneEuroFilter(FilterMinCutoff, FilterBeta, FilterDCutoff, pt.X, nowTicks);
+                    _filtersY[idx] = new OneEuroFilter(FilterMinCutoff, FilterBeta, FilterDCutoff, pt.Y, nowTicks);
+                    idx++;
+                }
+            }
+        }
+
+        private void ApplyOneEuroFilters(DetectionSnapshot source, RenderedDetectionState destination, long nowTicks)
+        {
+            destination.Rotation = source.Rotation;
+            destination.CompletedAtTicks = source.CompletedAtTicks;
+
+            int idx = 0;
+            for (int f = 0; f < destination.Faces.Count; f++)
+            {
+                var dstLandmarks = destination.Faces[f].Landmarks;
+                var srcLandmarks = source.Result.Faces[f].Landmarks;
+
+                for (int i = 0; i < dstLandmarks.Count; i++)
+                {
+                    dstLandmarks[i] = new NormalizedPoint(
+                        _filtersX![idx].Filter(srcLandmarks[i].X, nowTicks),
+                        _filtersY![idx].Filter(srcLandmarks[i].Y, nowTicks));
+                    idx++;
+                }
+            }
+        }
+
+        private void EnsureDetectionPaints(float scale)
+        {
+            _detectionStrokePaint ??= new SKPaint
+            {
+                IsAntialias = true,
+                Color = SKColors.LimeGreen,
+                Style = SKPaintStyle.Stroke,
+                StrokeCap = SKStrokeCap.Round,
+                StrokeJoin = SKStrokeJoin.Round
+            };
+
+            _detectionFillPaint ??= new SKPaint
+            {
+                IsAntialias = true,
+                Color = SKColors.LimeGreen,
+                Style = SKPaintStyle.Fill
+            };
+
+            _maskPaint ??= new SKPaint
+            {
+                IsAntialias = true,
+                FilterQuality = SKFilterQuality.High
+            };
+
+            _detectionStrokePaint.StrokeWidth = Math.Max(2f, 2f * scale);
+        }
+
+        private void DrawFaceLandmarks(DrawableFrame frame, DetectedFace face, int rotation)
+        {
+            float radius = Math.Max(2f, 2.5f * frame.Scale);
+            foreach (var point in face.Landmarks)
+            {
+                var projected = ProjectPoint(point, rotation, false);
+                frame.Canvas.DrawCircle(projected.X * frame.Width, projected.Y * frame.Height, radius, _detectionFillPaint);
+            }
+        }
+
+        private void DrawFaceRectangle(DrawableFrame frame, DetectedFace face, int rotation)
+        {
+            if (face.Landmarks.Count == 0)
+                return;
+
+            float minX = float.MaxValue;
+            float minY = float.MaxValue;
+            float maxX = float.MinValue;
+            float maxY = float.MinValue;
+
+            foreach (var point in face.Landmarks)
+            {
+                var projected = ProjectPoint(point, rotation, false);
+                minX = Math.Min(minX, projected.X);
+                minY = Math.Min(minY, projected.Y);
+                maxX = Math.Max(maxX, projected.X);
+                maxY = Math.Max(maxY, projected.Y);
+            }
+
+            frame.Canvas.DrawRect(minX * frame.Width, minY * frame.Height, (maxX - minX) * frame.Width, (maxY - minY) * frame.Height, _detectionStrokePaint);
+        }
+
+        private void DrawFaceMask(DrawableFrame frame, DetectedFace face, int rotation)
+        {
+            if (face.Landmarks.Count < 455 || MaskBitmap == null)
+                return;
+
+            var maskPos = ActiveMaskConfig?.Position ?? MaskPosition.Inside;
+
+            var anchorPt = maskPos switch
+            {
+                MaskPosition.Top => face.Landmarks[10],
+                MaskPosition.Bottom => face.Landmarks[152],
+                _ => face.Landmarks[1]
+            };
+
+            var leftCheek = face.Landmarks[234];
+            var rightCheek = face.Landmarks[454];
+
+            var anchor = ProjectPoint(anchorPt, rotation, false);
+            var left = ProjectPoint(leftCheek, rotation, false);
+            var right = ProjectPoint(rightCheek, rotation, false);
+
+            float xAnchor = anchor.X * frame.Width;
+            float yAnchor = anchor.Y * frame.Height;
+            float xLeft = left.X * frame.Width;
+            float yLeft = left.Y * frame.Height;
+            float xRight = right.X * frame.Width;
+            float yRight = right.Y * frame.Height;
+
+            float dx = xRight - xLeft;
+            float dy = yRight - yLeft;
+            float faceWidth = (float)Math.Sqrt(dx * dx + dy * dy);
+
+            float activeWidthMult = ActiveMaskConfig?.WidthMultiplier ?? 1.3f;
+            float activeYOffset = ActiveMaskConfig?.YOffsetRatio ?? 0f;
+            float maskWidth = faceWidth * activeWidthMult;
+            float maskHeight = maskWidth * (MaskBitmap.Height / (float)MaskBitmap.Width);
+            float angle = (float)(Math.Atan2(yRight - yLeft, xRight - xLeft) * (180.0 / Math.PI));
+
+            float targetDrawY = maskPos switch
+            {
+                MaskPosition.Top => -maskHeight + (maskHeight * activeYOffset),
+                MaskPosition.Bottom => maskHeight * activeYOffset,
+                _ => (-maskHeight / 2f) + (maskHeight * activeYOffset)
+            };
+
+            frame.Canvas.Save();
+            frame.Canvas.Translate(xAnchor, yAnchor);
+            frame.Canvas.RotateDegrees(angle);
+            frame.Canvas.DrawBitmap(MaskBitmap, new SKRect(-maskWidth / 2f, targetDrawY, maskWidth / 2f, targetDrawY + maskHeight), _maskPaint);
+            frame.Canvas.Restore();
+        }
+
+        private static NormalizedPoint ProjectPoint(NormalizedPoint point, int rotation, bool mirrorX)
+        {
+            float x = point.X;
+            float y = point.Y;
+
+            (x, y) = NormalizeRotation(rotation) switch
+            {
+                90 => (1f - y, x),
+                180 => (1f - x, 1f - y),
+                270 => (y, 1f - x),
+                _ => (x, y)
+            };
+
+            if (mirrorX)
+            {
+                x = 1f - x;
+            }
+
+            return new NormalizedPoint(x, y);
+        }
+
+        private static int NormalizeRotation(int rotation)
+        {
+            rotation %= 360;
+            if (rotation < 0)
+            {
+                rotation += 360;
+            }
+
+            return rotation;
+        }
+
+        protected SkiaLayout? OverlayPreview;
+        protected SkiaLayout? OverlayRecording;
+
+        /// <summary>
+        /// Set layouts to be rendered over preview and recording frames.
+        /// Different instances are needed to avoid remeasuring when switching between preview and recording.
+        /// This must be two copies of *same* layout, if you specify different layouts for preview and recording on some platforms only recording layout will be displayed while recording .
+        /// </summary>
+        /// <param name="previewLayout"></param>
+        /// <param name="recordingLayout"></param>
+        public void InitializeOverlayLayouts(SkiaLayout previewLayout, SkiaLayout recordingLayout)
+        {
+            if (previewLayout != null && recordingLayout != null)
+            {
+                this.OverlayPreview = previewLayout;
+                this.OverlayRecording = recordingLayout;
+
+                previewLayout.UseCache = SkiaCacheType.Operations;
+                previewLayout.Tag = "Preview";
+
+                recordingLayout.UseCache = SkiaCacheType.Operations;
+                recordingLayout.Tag = "Recording";
+ 
+                InvalidateOverlays();
+            }
+        }
+
+        /// <summary>
+        /// Call this when overlays need remeasuring, like camera format change, orientation change etc..
+        /// </summary>
+        public void InvalidateOverlays()
+        {
+            _overlayScaleChanged = -1;
+            _rectFramePreview = SKRect.Empty;
+            _rectFrameRecording = SKRect.Empty;
+        }
+
+        public record DetectionSnapshot
+        {
+            public DetectionSnapshot(FaceLandmarkResult result, int rotation, long completedAtTicks)
+            {
+                Result = result;
+                Rotation = rotation;
+                CompletedAtTicks = completedAtTicks;
+            }
+
+            public FaceLandmarkResult Result { get; }
+
+            public int Rotation { get; }
+
+            public long CompletedAtTicks { get; }
+        }
+
+        private sealed class RenderedDetectionState
+        {
+            public RenderedDetectionState(List<DetectedFace> faces, int rotation, long completedAtTicks)
+            {
+                Faces = faces;
+                Rotation = rotation;
+                CompletedAtTicks = completedAtTicks;
+            }
+
+            public List<DetectedFace> Faces { get; }
+
+            public int Rotation { get; set; }
+
+            public long CompletedAtTicks { get; set; }
+        }
+
+        private sealed record PendingDetectionRequest(
+            int BufferIndex,
+            int Width,
+            int Height,
+            int Rotation,
+            double ResizeMilliseconds,
+            bool ReusedCachedFrame);
+
+        /// <summary>
+        /// One Euro Filter: adaptive low-pass filter that smooths strongly when the signal
+        /// is stationary (killing jitter) but adds minimal lag when it moves quickly.
+        /// See: https://cristal.univ-lille.fr/~casiez/1euro/
+        /// </summary>
+        private sealed class OneEuroFilter
+        {
+            private readonly float _minCutoff;
+            private readonly float _beta;
+            private readonly float _dCutoff;
+            private float _xPrev;
+            private float _dxPrev;
+            private long _lastTicks;
+
+            public OneEuroFilter(float minCutoff, float beta, float dCutoff, float initialValue, long initialTicks)
+            {
+                _minCutoff = minCutoff;
+                _beta = beta;
+                _dCutoff = dCutoff;
+                _xPrev = initialValue;
+                _dxPrev = 0;
+                _lastTicks = initialTicks;
+            }
+
+            public float Filter(float x, long ticks)
+            {
+                var dtSeconds = Stopwatch.GetElapsedTime(_lastTicks, ticks).TotalSeconds;
+                if (dtSeconds <= 1e-6)
+                    return _xPrev;
+
+                _lastTicks = ticks;
+                var dt = (float)dtSeconds;
+
+                // Filter the derivative to estimate speed
+                var dx = (x - _xPrev) / dt;
+                var alphaD = ComputeAlpha(dt, _dCutoff);
+                _dxPrev = alphaD * dx + (1f - alphaD) * _dxPrev;
+
+                // Adaptive cutoff: higher speed → higher cutoff → less smoothing
+                var cutoff = _minCutoff + _beta * MathF.Abs(_dxPrev);
+
+                // Filter the signal
+                var alpha = ComputeAlpha(dt, cutoff);
+                _xPrev = alpha * x + (1f - alpha) * _xPrev;
+
+                return _xPrev;
+            }
+
+            private static float ComputeAlpha(float dt, float cutoff)
+            {
+                var tau = 1f / (2f * MathF.PI * cutoff);
+                return 1f / (1f + tau / dt);
+            }
+        }
+
+        public record PreviewDetectionMetrics(
+            double ResizeMilliseconds,
+            double DetectionMilliseconds,
+            bool ReusedCachedFrame,
+            int Width,
+            int Height,
+            int Rotation);
+
+        #endregion
+    }
+}
