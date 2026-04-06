@@ -254,7 +254,7 @@ public partial class MainPage : BasePageReloadable, IDisposable
             CameraControl.AudioSampleAvailable += OnAudioCaptured;
 
             // Monitor recording state changes to start/stop speech recognition
-            CameraControl.IsRecordingVideoChanged += OnIsRecordingStateChanged;
+            CameraControl.IsRecordingChanged += OnIsRecordingStateChanged;
             CameraControl.IsPreRecordingVideoChanged += OnIsPreRecordingStateChanged;
 
             //CameraControl.OnAudioSample += HUD.AddAudioSample;
@@ -271,7 +271,7 @@ public partial class MainPage : BasePageReloadable, IDisposable
                 CameraControl.RecordingSuccess -= OnVideoRecordingSuccess;
                 CameraControl.RecordingProgress -= OnVideoRecordingProgress;
                 CameraControl.AudioSampleAvailable -= OnAudioCaptured;
-                CameraControl.IsRecordingVideoChanged -= OnIsRecordingStateChanged;
+                CameraControl.IsRecordingChanged -= OnIsRecordingStateChanged;
                 CameraControl.IsPreRecordingVideoChanged -= OnIsPreRecordingStateChanged;
 
                 //CameraControl.OnAudioSample -= HUD.AddAudioSample;

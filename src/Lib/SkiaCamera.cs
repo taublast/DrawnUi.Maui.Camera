@@ -34,8 +34,8 @@ public partial class SkiaCamera : SkiaControl
     #region PROPERTIES
 
 
-    public event EventHandler<bool> IsPreRecordingVideoChanged;
-    public event EventHandler<bool> IsRecordingVideoChanged;
+    public event EventHandler<bool> IsPreRecordingChanged;
+    public event EventHandler<bool> IsRecordingChanged;
     public event EventHandler<bool> IsRecordingAudioOnlyChanged;
 
     /// <summary>
@@ -78,7 +78,7 @@ public partial class SkiaCamera : SkiaControl
         if (IsRecording != isRecording)
         {
             IsRecording = isRecording;
-            IsRecordingVideoChanged?.Invoke(this, isRecording);
+            IsRecordingChanged?.Invoke(this, isRecording);
         }
     }
 
@@ -87,7 +87,7 @@ public partial class SkiaCamera : SkiaControl
         if (IsPreRecording != isPreRecording)
         {
             IsPreRecording = isPreRecording;
-            IsPreRecordingVideoChanged?.Invoke(this, isPreRecording);
+            IsPreRecordingChanged?.Invoke(this, isPreRecording);
         }
     }
 
