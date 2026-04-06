@@ -1,6 +1,6 @@
 # SkiaCamera
 
-Camera control, rendered with SkiaSharp and DrawnUI for .NET MAUI.
+Camera control, rendered with SkiaSharp and DrawnUI for .NET MAUI.  
 Use inside any MAUI app just by wrapping with a `Canvas`. Use as Camera or a standalone Audio recorder.
 
 * Full featured camera control for iOS, MacCatalyst, Android and Windows.
@@ -16,7 +16,7 @@ Use inside any MAUI app just by wrapping with a `Canvas`. Use as Camera or a sta
 ## Sample Apps
 
 - [SkiaCamera Demo](https://github.com/taublast/DrawnUi.Maui.Camera/tree/main/src/Samples/SkiaCameraDemo) - This repo: recording with processing, shaders, AI captions.
-- [Filters Camera](https://github.com/taublast/ShadersCamera) - Open source published still photo-camera with realtime preview and final photo filters, implemented with SKSL shaders.
+- [Filters Camera](https://github.com/taublast/ShadersCamera) - Still photo-camera with realtime SKSL shaders as photo-filters.
 - [SolTempo](https://github.com/taublast/SolTempo) - Audio visualizer and BPM detector using SkiaCamera's audio monitoring capabilities.
 
 ## Installation
