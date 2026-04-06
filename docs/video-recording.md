@@ -11,6 +11,9 @@ if (camera.CanRecordVideo())
     await camera.StopVideoRecording();
 }
 
+// Abort recording — discard without saving
+await camera.StopVideoRecording(true);
+
 camera.RecordingSuccess += OnRecordingSuccess;
 camera.RecordingFailed += OnRecordingFailed;
 camera.RecordingProgress += OnRecordingProgress;
@@ -105,6 +108,18 @@ camera.EnableVideoPreview = true;
 camera.EnableVideoRecording = true;
 camera.EnableAudioRecording = false;
 await camera.StartVideoRecording();
+
+// 5. Audio monitoring only (no recording, no camera) — e.g. pitch detection, BPM, visualizers
+// Can be used hidden in the UI tree or from a ViewModel like a service
+var audioMonitor = new SkiaCamera
+{
+    NeedPermissionsSet = NeedPermissions.Microphone, // only mic needed
+    EnableVideoPreview = false,
+    EnableVideoRecording = false,
+    EnableAudioRecording = false,
+    EnableAudioMonitoring = true
+};
+audioMonitor.IsOn = true;
 ```
 
 ### Audio-Only Recording Output
@@ -211,9 +226,69 @@ camera.ProcessFrame = (frame) =>
 - Single-frame-in-flight policy prevents memory bloat
 - Rotation locking during recording for consistent output
 
+## Pre-Recording (Look-Back Capture)
+
+Pre-recording maintains a circular buffer so the saved clip includes seconds *before* the user pressed record.
+
+```csharp
+camera.EnablePreRecording = true;
+camera.PreRecordDuration = TimeSpan.FromSeconds(5);
+```
+
+With pre-recording enabled, `StartVideoRecording()` becomes a **3-state toggle**:
+
+1. **First call** sets `IsPreRecording = true` — the camera fills an in-memory buffer but writes nothing to disk.
+2. **Second call** sets `IsRecording = true` — buffered frames are prepended to the file and live recording begins.
+3. **`StopVideoRecording()`** finalizes the file. `StopVideoRecording(true)` aborts and discards.
+
+Both `IsPreRecording` and `IsRecording` are bindable for UI state.
+
+If recording is stopped during pre-recording (before the second call), and the buffer contains less than 1 second of footage, the recording is automatically aborted.
+
+See [PreRecording.md](../PreRecording.md) for the full breakdown.
+
+## DrawnUI Overlay on Frames
+
+You can attach a DrawnUI layout tree as an overlay that renders onto both preview and recorded frames:
+
+```csharp
+var overlay = new FrameOverlay(); // your SkiaLayout subclass
+camera.InitializeOverlayLayouts(overlay);
+```
+
+The same overlay instance is reused for both preview and recording. Use `SkiaCacheType.ImageDoubleBuffered` on animated parts so the encoder thread can snapshot the overlay efficiently without stalling on layout work.
+
 ## Real-Time Audio Processing
 
-Process audio samples in real-time during video recording by overriding `WriteAudioSample`. **Requires `UseRealtimeVideoProcessing = true`**.
+There are two override points for live audio:
+
+- **`OnAudioSampleAvailable(AudioSample)`** — fires when `EnableAudioMonitoring = true`. Use for visualization, speech recognition, or any read/modify before encoding. Return the (possibly modified) sample.
+- **`WriteAudioSample(AudioSample)`** — fires during recording with `UseRealtimeVideoProcessing = true`. Use for in-place audio effects on the encoder path.
+
+**Important:** `EnableAudioMonitoring = true` is required for `OnAudioSampleAvailable` to fire. This gates both the audio visualizer pipeline and any speech transcription fed from the same stream.
+
+### OnAudioSampleAvailable (monitoring + preprocessing)
+
+```csharp
+public class AppCamera : SkiaCamera
+{
+    protected override AudioSample OnAudioSampleAvailable(AudioSample sample)
+    {
+        // Apply gain in place
+        if (UseGain)
+            AmplifyPcm16(sample.Data, GainFactor);
+
+        // Feed visualizers, speech pipeline, etc.
+        OnAudioSample?.Invoke(sample);
+
+        return base.OnAudioSampleAvailable(sample);
+    }
+}
+```
+
+### WriteAudioSample (encoder path)
+
+Requires `UseRealtimeVideoProcessing = true`:
 
 ```csharp
 public class MyCamera : SkiaCamera 

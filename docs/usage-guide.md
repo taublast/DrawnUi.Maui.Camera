@@ -53,6 +53,10 @@ xmlns:camera="clr-namespace:DrawnUi.Camera;assembly=DrawnUi.Maui.Camera"
     </draw:Canvas>
 ```
 
+**Container tips:**
+- Keep the container stable: no `Auto` rows, no unset width/height without `Fill`.
+- For correct saved video orientation, lock the app or the camera page to portrait. The UI can still respond to landscape rotation by rotating icons/controls — DrawnUI provides device orientation info at runtime.
+
 ### Code-Behind
 
 Example for use inside an already created `Canvas`:
@@ -100,6 +104,8 @@ camera.IsOn = false; // Stop camera
 **Important**: `IsOn` vs `Start()` difference:
 - `IsOn = true`: Proper lifecycle management, handles permissions, app backgrounding
 - `Start()`: Direct method call, bypasses safety checks
+
+**App backgrounding:** The camera automatically turns off when the app goes to background and restores its state when the app resumes — no additional coding needed.
 
 ### Global Instance Management
 

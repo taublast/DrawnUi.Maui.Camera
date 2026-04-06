@@ -42,9 +42,14 @@ public double Zoom { get; set; }                   // Current zoom level
 public double ZoomLimitMin { get; set; }           // Minimum zoom
 public double ZoomLimitMax { get; set; }           // Maximum zoom
 
-// Audio Recording
+// Audio
 public bool EnableAudioRecording { get; set; }     // Include audio in video recordings (default: true)
+public bool EnableAudioMonitoring { get; set; }    // Enable live audio callbacks/visualization (default: false)
 public CameraAudioMode AudioMode { get; set; }     // Audio processing mode (default: Default)
+
+// Video/Audio Control
+public bool EnableVideoPreview { get; set; }       // Show video preview (default: true)
+public bool EnableVideoRecording { get; set; }     // Record video frames (default: true)
 ```
 
 ## Core Methods
@@ -77,7 +82,7 @@ public void OpenFileInGallery(string filePath)
 
 // Video Recording Operations
 public async Task StartVideoRecording()
-public async Task StopVideoRecording()
+public async Task StopVideoRecording(bool abort = false)  // abort=true discards without saving
 public bool CanRecordVideo()
 public async Task<List<VideoFormat>> GetAvailableVideoFormatsAsync()
 public VideoFormat GetCurrentVideoFormat()
@@ -91,6 +96,16 @@ public void SetFlashMode(FlashMode mode)
 public FlashMode GetFlashMode()
 public void SetCaptureFlashMode(CaptureFlashMode mode)
 public CaptureFlashMode GetCaptureFlashMode()
+
+// Overlay
+public void InitializeOverlayLayouts(SkiaLayout overlay)  // Attach DrawnUI layout as frame overlay
+
+// Audio Processing (virtual overrides)
+protected virtual AudioSample OnAudioSampleAvailable(AudioSample sample)  // Requires EnableAudioMonitoring = true
+public virtual void WriteAudioSample(AudioSample sample)                  // Requires UseRealtimeVideoProcessing = true
+
+// Audio Utilities
+public static void AmplifyPcm16(byte[] data, float gainFactor)  // In-place PCM16 gain, zero allocations
 ```
 
 ## Events
