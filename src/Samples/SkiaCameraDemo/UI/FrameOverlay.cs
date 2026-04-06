@@ -34,6 +34,7 @@ public class FrameOverlay : CameraOverlayLayout, IAppOverlay
     private SkiaShape _captionsPanel;
     private AudioVisualizer visualizer;
     private SkiaShape panelVisualizer;
+    private bool _wasPreviewMode;
 
     public FrameOverlay()
     {
@@ -161,6 +162,25 @@ public class FrameOverlay : CameraOverlayLayout, IAppOverlay
     public void SetAudioMonitoring(bool isAudioMonitoringEnabled)
     {
         panelVisualizer.IsVisible = isAudioMonitoringEnabled;
+    }
+
+    /// <summary>
+    /// Adapts layout according to whether we're in preview mode or not. In preview, we want to center the captions
+    /// Will update only once when mode changes, returns true if changes were made that require a layout update.
+    /// </summary>
+    /// <param name="isPreview"></param>
+    /// <returns></returns>
+    public bool AdaptLayoutToMode(bool isPreview)
+    {
+        if (_wasPreviewMode == isPreview)
+        {
+            return false;
+        }
+        _wasPreviewMode = isPreview;
+
+        _captionsPanel.VerticalOptions = isPreview ? LayoutOptions.Center : LayoutOptions.End;
+
+        return true;
     }
 
 

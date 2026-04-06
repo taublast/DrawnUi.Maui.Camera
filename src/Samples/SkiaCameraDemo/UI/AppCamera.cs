@@ -85,7 +85,7 @@ namespace CameraTests.Views
             }
         }
 
-        public event Action<AudioSample> OnAudioSample; 
+        public event Action<AudioSample> OnAudioSample;
 
         protected override AudioSample OnAudioSampleAvailable(AudioSample sample)
         {
@@ -211,6 +211,7 @@ namespace CameraTests.Views
                         IsAntialias = true,
                     };
                 }
+
                 paint = _paintPreview;
             }
             else
@@ -222,6 +223,7 @@ namespace CameraTests.Views
                         IsAntialias = true,
                     };
                 }
+
                 paint = _paintRec;
             }
 
@@ -267,7 +269,7 @@ namespace CameraTests.Views
         private float _paintPreviewStrokeWidth = -1f;
         private float _paintTextSize = -1f;
         private float _paintPreviewTextSize = -1f;
-        private SKPaintStyle _paintStyle;       // default(SKPaintStyle) == Fill == 0
+        private SKPaintStyle _paintStyle; // default(SKPaintStyle) == Fill == 0
         private SKPaintStyle _paintPreviewStyle;
 
         private DeviceOrientation _orientation;
@@ -288,6 +290,7 @@ namespace CameraTests.Views
                 }
             }
         }
+
         private float _previewScale;
         private float _renderedScale;
         private SKRect _rectFramePreview;
@@ -303,12 +306,12 @@ namespace CameraTests.Views
             var setting = smallSize;
             return setting switch
             {
-                0 => 1920f,   // Default 1080p max dimension
-                720 => 1280f,   // 1280x720 max
-                1080 => 1920f,  // 1920x1080 max
-                1440 => 2560f,  // 2560x1440 max
-                2160 => 3840f,  // 3840x2160 max
-                4320 => 7680f,  // 7680x4320 max
+                0 => 1920f, // Default 1080p max dimension
+                720 => 1280f, // 1280x720 max
+                1080 => 1920f, // 1920x1080 max
+                1440 => 2560f, // 2560x1440 max
+                2160 => 3840f, // 3840x2160 max
+                4320 => 7680f, // 7680x4320 max
                 _ => 1920f
             };
         }
@@ -321,6 +324,7 @@ namespace CameraTests.Views
                 _overlayScaleChanged = -1;
                 return;
             }
+
             var (formatWidth, formatHeight) = this.GetRotationCorrectedDimensions(format.Width, format.Height);
             var baseDivider = GetOverlayBaseDivider(Math.Min(format.Width, format.Height));
             _overlayScaleChanged = Math.Max(formatWidth, formatHeight) / baseDivider;
@@ -365,7 +369,8 @@ namespace CameraTests.Views
                 var k = _overlayScale;
                 var overlayScale = 1.5f * frame.Scale * k; //magic number
 
-                if (_rectOrientation != _orientation && !IsRecording && !IsPreRecording) //lock overlay orientation when recording
+                if (_rectOrientation != _orientation && !IsRecording &&
+                    !IsPreRecording) //lock overlay orientation when recording
                 {
                     _rectFramePreview = SKRect.Empty;
                     _rectOrientation = _orientation;
@@ -374,8 +379,6 @@ namespace CameraTests.Views
                 var orientation = _rectOrientation;
 
                 var frameRect = new SKRect(0, 0, frame.Width, frame.Height);
-                ;
-                //var rectLimits = frameRect;
 
                 if (frame.IsPreview && _rectFramePreview == SKRect.Empty)
                 {
@@ -386,12 +389,15 @@ namespace CameraTests.Views
                     }
                 }
 
-                if (this.Orientation == DeviceOrientation.LandscapeLeft || this.Orientation == DeviceOrientation.LandscapeRight)
+                if (this.Orientation == DeviceOrientation.LandscapeLeft ||
+                    this.Orientation == DeviceOrientation.LandscapeRight)
                 {
                     overlayScale *= 0.8f; //smaller in landscape
                 }
 
                 bool wasMeasured = false;
+
+                layout.AdaptLayoutToMode(frame.IsPreview);
 
                 if (layout.NeedMeasure)
                 {
@@ -451,12 +457,14 @@ namespace CameraTests.Views
             var newTextSize = 32 * frame.Scale;
             if (cachedTextSize != newTextSize)
             {
-                cachedTextSize = newTextSize; paint.TextSize = newTextSize;
+                cachedTextSize = newTextSize;
+                paint.TextSize = newTextSize;
             }
 
             if (cachedStyle != SKPaintStyle.Fill)
             {
-                cachedStyle = SKPaintStyle.Fill; paint.Style = SKPaintStyle.Fill;
+                cachedStyle = SKPaintStyle.Fill;
+                paint.Style = SKPaintStyle.Fill;
             }
 
             // text at top left
@@ -480,12 +488,14 @@ namespace CameraTests.Views
             {
                 //_labelRec.Text = string.Empty;
                 newColor = SKColors.Transparent;
-                text = $"{CurrentVideoFormat.Width}x{CurrentVideoFormat.Height} ({frame.Width}x{frame.Height}) x{_renderedScale:0.00}";
+                text =
+                    $"{CurrentVideoFormat.Width}x{CurrentVideoFormat.Height} ({frame.Width}x{frame.Height}) x{_renderedScale:0.00}";
             }
 
             if (cachedColor != newColor)
             {
-                cachedColor = newColor; paint.Color = newColor;
+                cachedColor = newColor;
+                paint.Color = newColor;
             }
 
 
@@ -498,9 +508,9 @@ namespace CameraTests.Views
                 }
             }
             else
-            //RECORDING
+                //RECORDING
             {
-                if (VideoDataOverlay != null)// && !Model.IsRecording)
+                if (VideoDataOverlay != null) // && !Model.IsRecording)
                 {
                     DrawOverlay(VideoDataOverlay, false);
                 }
@@ -509,8 +519,18 @@ namespace CameraTests.Views
             if (VideoDiagnosticsOn && cachedColor != SKColors.Transparent)
             {
                 var newStrokeWidth = 2 * frame.Scale;
-                if (cachedStyle != SKPaintStyle.Stroke) { cachedStyle = SKPaintStyle.Stroke; paint.Style = SKPaintStyle.Stroke; }
-                if (cachedStrokeWidth != newStrokeWidth) { cachedStrokeWidth = newStrokeWidth; paint.StrokeWidth = newStrokeWidth; }
+                if (cachedStyle != SKPaintStyle.Stroke)
+                {
+                    cachedStyle = SKPaintStyle.Stroke;
+                    paint.Style = SKPaintStyle.Stroke;
+                }
+
+                if (cachedStrokeWidth != newStrokeWidth)
+                {
+                    cachedStrokeWidth = newStrokeWidth;
+                    paint.StrokeWidth = newStrokeWidth;
+                }
+
                 frame.Canvas.DrawRect(10 * frame.Scale, 10 * frame.Scale, frame.Width - 20 * frame.Scale,
                     frame.Height - 20 * frame.Scale, paint);
 
@@ -529,22 +549,23 @@ namespace CameraTests.Views
             base.Dispose(isDisposing);
         }
 
-        public void InitializeOverlayLayouts(FrameOverlay previewLayout)
+        public FrameOverlay CreateOverlay()
         {
-            if (previewLayout != null)
+            var previewLayout = new FrameOverlay();
+
+            this.VideoDataOverlay = previewLayout;
+
+            previewLayout.UseCache = SkiaCacheType.Operations;
+            previewLayout.Tag = "Preview";
+
+            InvalidateOverlays();
+
+            if (previewLayout is IAppOverlay appOverlayInit)
             {
-                this.VideoDataOverlay = previewLayout;
-
-                previewLayout.UseCache = SkiaCacheType.Operations;
-                previewLayout.Tag = "Preview";
-
-                InvalidateOverlays();
-
-                if (previewLayout is IAppOverlay appOverlayInit)
-                {
-                    VisualizerName = appOverlayInit.Visualizer?.VisualizerName ?? "None";
-                }
+                VisualizerName = appOverlayInit.Visualizer?.VisualizerName ?? "None";
             }
+
+            return previewLayout;
         }
 
         /// <summary>

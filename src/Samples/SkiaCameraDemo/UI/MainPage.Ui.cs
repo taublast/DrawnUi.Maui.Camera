@@ -325,7 +325,7 @@ namespace CameraTests.Views
                                             Padding = new Thickness(12, 8),
                                             Children =
                                             {
-                                                new SkiaLabel("SPEECH OFF")
+                                                new SkiaLabel()
                                                     {
                                                         LineBreakMode = LineBreakMode.NoWrap,
                                                         FontSize = 12,
@@ -345,13 +345,16 @@ namespace CameraTests.Views
                                                     : IsTranscriptionFailed
                                                         ? Color.FromArgb("#2DF97316")
                                                         : Color.FromArgb("#2D10B981");
+                                                
                                                 me.StrokeColor = !IsSpeechEnabled
                                                     ? Color.FromArgb("#33233445")
                                                     : IsTranscriptionFailed
                                                         ? Color.FromArgb("#66F97316")
                                                         : Color.FromArgb("#6610B981");
-                                                speechButtonLabel.Text = !IsSpeechEnabled ? "SPEECH OFF" :
-                                                    IsTranscriptionFailed ? "RETRY" : "SPEECH ON";
+
+                                                speechButtonLabel.Text = !IsSpeechEnabled ? "CAPTIONS OFF" :
+                                                    IsTranscriptionFailed ? "RETRY" : "CAPTIONS ON";
+
                                                 speechButtonLabel.TextColor =
                                                     IsSpeechEnabled ? Colors.White : Color.FromArgb("#8FA3B7");
                                             })

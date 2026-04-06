@@ -184,9 +184,8 @@ public partial class MainPage : BasePageReloadable, IDisposable
                 Children = { Canvas }
             };
 
-        _previewFrameOverlay = new FrameOverlay();
+        _previewFrameOverlay = CameraControl.CreateOverlay();
         _captionsLabel = _previewFrameOverlay.CaptionsLabel;
-        CameraControl.InitializeOverlayLayouts(_previewFrameOverlay); // null recording = reuse preview overlay
 
         UpdateCameraControlsRotation(Super.DeviceRotation);
         InitializeCaptionsEngine();
