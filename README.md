@@ -5,23 +5,19 @@ Use as Camera or a standalone Audio recorder inside any MAUI app by wrapping wit
 
 ## Features
 
-- Cross-platform support (Android, iOS, MacCatalyst, Windows)
-- Post-process taken photos
-- Process frames being recorded in realtime, save encoded video with your effects/overlays applied without post-processing.
-- Change and visualise audio sample in realtime before encoding.
-- Abort recording if needed without saving anything.
-- Inject custom EXIF, save GPS location to both photos and video.
-- Hardware-accelerated rendering with SkiaSharp
+- Cross-platform (Android, iOS, MacCatalyst, Windows) with hardware-accelerated SkiaSharp rendering
+- Real-time preview effects (Sepia, B&W, Pastel) and custom SKSL shaders
+- Photo capture with post-processing and metadata
+- Video recording with real-time frame processing — overlays/effects baked in without post-processing
+- Audio-only recording mode with real-time sample visualization
+- [Pre-recording buffer](PreRecording.md) — capture seconds before the live recording started
+- Abort recording without saving
 - Manual and automatic camera selection with enumeration
 - Capture format management with quality presets and manual format selection
-- Real-time preview effects (Sepia, B&W, Pastel) and custom SKSL shaders
-- Photo capture with metadata
-- Video recording with format selection, quality presets, and real-time frame processing
-- Audio-only recording mode
 - Zoom control with configurable limits
 - Dual-channel flash control (preview torch + capture flash)
+- GPS injection and custom EXIF for both photos and videos
 - Built-in permission handling
-- Use [pre-recording mode](PreRecording.md) to capture few seconds before the live recording was started.
 
 ## Sample Apps
 
