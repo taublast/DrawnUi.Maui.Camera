@@ -1,17 +1,27 @@
 # SkiaCamera
 
-Camera control, rendered with SkiaSharp and DrawnUI for .NET MAUI.  
-Use inside any MAUI app just by wrapping with a `Canvas`. Use as Camera or a standalone Audio recorder.
+Camera control, rendered with SkiaSharp and DrawnUI for .NET MAUI enabling real-time video processing, photo capture with metadata, and audio recording, AI/ML capture-friendly.
+Use as Camera or a standalone Audio recorder inside any MAUI app by wrapping with a `Canvas`.  
 
-* Full featured camera control for iOS, MacCatalyst, Android and Windows.
-* Draw camera preview with effects and overlays, position UI how You feel it.
-* Process live video preview in realtime, use for AI/ML and other calls.
-* Post-process taken photos
-* Process frames being recorded in realtime, save encoded video with your effects/overlays applied without post-processing.
-* Change and visualise audio sample in realtime before encoding.
-* Use [pre-recording mode](PreRecording.md) to capture few seconds before the live recording button was pressed.
-* Abort recording if needed without saving anything.
-* Inject custom EXIF, save GPS location to both photos and video.
+## Features
+
+- Cross-platform support (Android, iOS, MacCatalyst, Windows)
+- Post-process taken photos
+- Process frames being recorded in realtime, save encoded video with your effects/overlays applied without post-processing.
+- Change and visualise audio sample in realtime before encoding.
+- Abort recording if needed without saving anything.
+- Inject custom EXIF, save GPS location to both photos and video.
+- Hardware-accelerated rendering with SkiaSharp
+- Manual and automatic camera selection with enumeration
+- Capture format management with quality presets and manual format selection
+- Real-time preview effects (Sepia, B&W, Pastel) and custom SKSL shaders
+- Photo capture with metadata
+- Video recording with format selection, quality presets, and real-time frame processing
+- Audio-only recording mode
+- Zoom control with configurable limits
+- Dual-channel flash control (preview torch + capture flash)
+- Built-in permission handling
+- Use [pre-recording mode](PreRecording.md) to capture few seconds before the live recording was started.
 
 ## Sample Apps
 
@@ -176,25 +186,6 @@ bool ok = await SkiaCamera.RequestPermissionsAsync(
     NeedPermissions.Camera | NeedPermissions.Gallery | NeedPermissions.Microphone);
 if (ok) camera.IsOn = true;
 ```
-
-## Features
-
-- Cross-platform support (Android, iOS, MacCatalyst, Windows)
-- Hardware-accelerated rendering with SkiaSharp
-- Manual and automatic camera selection with enumeration
-- Capture format management with quality presets and manual format selection
-- Real-time preview effects (Sepia, B&W, Pastel) and custom SKSL shaders
-- Photo capture with metadata
-- Video recording with format selection, quality presets, and real-time frame processing
-- Audio-only recording mode
-- Pre-recording buffer (capture seconds before pressing record)
-- Zoom control with configurable limits
-- Dual-channel flash control (preview torch + capture flash)
-- GPS injection for photos (EXIF) and videos (MP4 metadata)
-- Rich video metadata (author, camera, date, GPS)
-- Real-time audio processing during recording
-- Event-driven architecture for MVVM patterns
-- Built-in permission handling
 
 ## Documentation
 
