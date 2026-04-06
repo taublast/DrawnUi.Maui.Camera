@@ -3,7 +3,6 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.WindowsRuntime;
-using System.Runtime.InteropServices.WindowsRuntime;
 using AppoMobi.Specials;
 using DrawnUi.Views;
 using Microsoft.Maui.ApplicationModel;

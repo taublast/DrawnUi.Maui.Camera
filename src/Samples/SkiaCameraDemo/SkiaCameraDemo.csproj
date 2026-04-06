@@ -2,9 +2,6 @@
 
     <PropertyGroup>
 
-        <!--<TargetFrameworks>net9.0-windows10.0.19041.0</TargetFrameworks>-->
-        <!--<TargetFrameworks>net9.0-android</TargetFrameworks>-->
-
         <TargetFrameworks>net9.0-android;net9.0-ios;net9.0-maccatalyst</TargetFrameworks>
         <TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('windows'))">$(TargetFrameworks);net9.0-windows10.0.19041.0</TargetFrameworks>
         
@@ -138,7 +135,8 @@
     </ItemGroup>
 
     <ItemGroup>
-        <ProjectReference Include="..\..\Addons\DrawnUi.Maui.Camera\DrawnUi.Maui.Camera.csproj" />
+      
+        <ProjectReference Include="..\..\Lib\DrawnUi.Maui.Camera.csproj" />
 	</ItemGroup>
 
     <ItemGroup>
@@ -154,16 +152,6 @@
             <LastGenOutput>ResStrings.Designer.cs</LastGenOutput>
             <Generator>PublicResXFileCodeGenerator</Generator>
         </EmbeddedResource>
-    </ItemGroup>
-
-    <ItemGroup>
-      <Folder Include="Extensions\" />
-    </ItemGroup>
-
-    <ItemGroup>
-      <MauiXaml Update="TestRandom.xaml">
-        <Generator>MSBuild:Compile</Generator>
-      </MauiXaml>
     </ItemGroup>
 
 
