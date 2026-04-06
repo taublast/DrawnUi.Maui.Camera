@@ -61,6 +61,10 @@ namespace CameraTests.UI
         private int _activeDetectionBufferIndex = -1;
         private PendingDetectionRequest? _queuedDetectionRequest;
 
+        /// <summary>
+        /// Initializes the sample camera with audio, preview processing, and real-time frame processing
+        /// enabled so face detection can run directly against incoming preview frames.
+        /// </summary>
         public AppCamera()
         {
             //set defaults for this camera, we set base to be able to do video recording with sound
@@ -150,6 +154,9 @@ namespace CameraTests.UI
 
         private int _maxNumFaces = 2;
 
+        /// <summary>
+        /// Pushes the current camera-side detection settings into the active detector instance.
+        /// </summary>
         private void ApplyDetectorSettings()
         {
             if (_detector != null)
@@ -158,6 +165,12 @@ namespace CameraTests.UI
             }
         }
 
+        /// <summary>
+        /// Loads or clears the bitmap used for mask rendering so preview and recording overlays use the
+        /// same already-decoded asset.
+        /// </summary>
+        /// <param name="config">The mask configuration to activate, or <see langword="null"/> to disable masks.</param>
+        /// <returns>A task that completes once the mask asset has been loaded or cleared.</returns>
         public async Task SetMaskConfigurationAsync(MaskConfiguration? config)
         {
             ActiveMaskConfig = config;
@@ -181,6 +194,9 @@ namespace CameraTests.UI
 
 
 
+        /// <summary>
+        /// Releases detector subscriptions and stops the preview-detection pipeline before base disposal.
+        /// </summary>
         public override void OnDisposing()
         {
             Detector = null;
@@ -209,6 +225,12 @@ namespace CameraTests.UI
 
         public event Action<AudioSample>? OnAudioSample; 
 
+        /// <summary>
+        /// Applies optional gain to captured PCM audio, forwards the sample to listeners, and then lets
+        /// the base camera pipeline continue processing the same sample.
+        /// </summary>
+        /// <param name="sample">The audio sample received from the capture pipeline.</param>
+        /// <returns>The sample that should continue through the base pipeline.</returns>
         protected override AudioSample OnAudioSampleAvailable(AudioSample sample)
         {
             if (UseGain && sample.Data != null && sample.Data.Length > 1)
@@ -240,6 +262,10 @@ namespace CameraTests.UI
             }
         }
 
+        /// <summary>
+        /// Disposes paints, bitmaps, and filter state owned by this sample camera before the control tree
+        /// is torn down.
+        /// </summary>
         public override void OnWillDisposeWithChildren()
         {
             base.OnWillDisposeWithChildren();
@@ -260,6 +286,14 @@ namespace CameraTests.UI
             _filtersY = null;
         }
 
+        /// <summary>
+        /// Captures the newest preview frame for ML and feeds it into a coalescing detection pipeline.
+        /// Only one preview detection is allowed to run at a time. If a frame arrives while detection
+        /// is already in flight, this method keeps only the most recent pending request and drops older
+        /// intermediate frames so overlay latency stays low.
+        /// </summary>
+        /// <param name="rawImage">The latest camera frame provided by <see cref="SkiaCamera"/>.</param>
+        /// <param name="rotation">The rotation associated with <paramref name="rawImage"/>.</param>
         protected override void OnRawFrameAcquired(SKImage rawImage, int rotation)
         {
             base.OnRawFrameAcquired(rawImage, rotation);
@@ -339,6 +373,13 @@ namespace CameraTests.UI
             }
         }
 
+        /// <summary>
+        /// Submits a prepared preview-detection request to the detector using the buffer selected in
+        /// <see cref="OnRawFrameAcquired(SKImage, int)"/>. On submission failure, the active slot is
+        /// released so a newer queued frame can still continue through the pipeline.
+        /// </summary>
+        /// <param name="detector">The detector instance that should process the request.</param>
+        /// <param name="request">The prepared request describing the ML frame and timing metadata.</param>
         private void SubmitPreviewDetection(IFaceLandmarkDetector? detector, PendingDetectionRequest? request)
         {
             if (detector == null || request == null)
@@ -366,6 +407,14 @@ namespace CameraTests.UI
             }
         }
 
+        /// <summary>
+        /// Handles successful preview detection completion, publishes the latest detection snapshot and
+        /// immediately advances the coalescing pipeline by calling <see cref="FinishPreviewDetection"/>.
+        /// That follow-up call does not resubmit the completed request; it frees the active slot and, if
+        /// a newer frame was captured while detection was running, starts that pending request next.
+        /// </summary>
+        /// <param name="sender">The detector that raised the completion event.</param>
+        /// <param name="e">The completed detection result and request metadata.</param>
         private void OnDetectorPreviewDetectionCompleted(object? sender, PreviewDetectionCompletedEventArgs e)
         {
             if (!ReferenceEquals(sender, Detector))
@@ -381,21 +430,25 @@ namespace CameraTests.UI
 
             var detectionMilliseconds = Stopwatch.GetElapsedTime(e.Request.EnqueuedAtTicks, completedAtTicks).TotalMilliseconds;
 
-            MainThread.BeginInvokeOnMainThread(() =>
-            {
-                PreviewDetectionMeasured?.Invoke(this, new PreviewDetectionMetrics(
-                    e.Request.ResizeMilliseconds,
-                    detectionMilliseconds,
-                    e.Request.ReusedCachedFrame,
-                    e.Request.Width,
-                    e.Request.Height,
-                    e.Request.Rotation));
-                PreviewDetectionUpdated?.Invoke(this, e.Result);
-            });
+            //if we had not drawnui context should call this on ui-thread probably
+            PreviewDetectionMeasured?.Invoke(this, new PreviewDetectionMetrics(
+                e.Request.ResizeMilliseconds,
+                detectionMilliseconds,
+                e.Request.ReusedCachedFrame,
+                e.Request.Width,
+                e.Request.Height,
+                e.Request.Rotation));
+            PreviewDetectionUpdated?.Invoke(this, e.Result);
 
             FinishPreviewDetection();
         }
 
+        /// <summary>
+        /// Handles preview detection failures. The current in-flight request is considered finished even
+        /// on error, so the active slot is released and the newest queued request, if any, can continue.
+        /// </summary>
+        /// <param name="sender">The detector that raised the failure event.</param>
+        /// <param name="e">The failed request metadata and the thrown exception.</param>
         private void OnDetectorPreviewDetectionFailed(object? sender, PreviewDetectionFailedEventArgs e)
         {
             if (!ReferenceEquals(sender, Detector))
@@ -409,6 +462,12 @@ namespace CameraTests.UI
             });
         }
 
+        /// <summary>
+        /// Completes the current preview-detection slot and drains the single queued request, if present.
+        /// This implements a latest-frame-wins queue of depth one: while one request is running, newer
+        /// frames overwrite <c>_queuedDetectionRequest</c>; when the active request finishes, only that
+        /// latest queued request is dispatched.
+        /// </summary>
         private void FinishPreviewDetection()
         {
             PendingDetectionRequest? nextRequest = null;
@@ -430,6 +489,10 @@ namespace CameraTests.UI
             SubmitPreviewDetection(detector, nextRequest);
         }
 
+        /// <summary>
+        /// Stops accepting new queued preview-detection work and clears any pending request that has not
+        /// yet been submitted. An already running detector callback may still complete afterward.
+        /// </summary>
         private void StopDetectionWorker()
         {
             lock (_detectionSync)
@@ -442,6 +505,15 @@ namespace CameraTests.UI
             }
         }
 
+        /// <summary>
+        /// Chooses the ML working size for the incoming frame and ensures the selected staging buffer is
+        /// large enough to hold the converted RGBA pixels.
+        /// </summary>
+        /// <param name="rawImage">The source image received from the camera, if available.</param>
+        /// <param name="bufferIndex">The index of the reusable ML buffer that should receive the frame.</param>
+        /// <param name="targetWidth">Receives the scaled width chosen for ML processing.</param>
+        /// <param name="targetHeight">Receives the scaled height chosen for ML processing.</param>
+        /// <returns><see langword="true"/> when a valid ML frame size was prepared; otherwise <see langword="false"/>.</returns>
         private bool TryPrepareMlFrame(SKImage? rawImage, int bufferIndex, out int targetWidth, out int targetHeight)
         {
             targetWidth = 0;
@@ -477,6 +549,11 @@ namespace CameraTests.UI
             return true;
         }
 
+        /// <summary>
+        /// Resolves the detector input size to use for the next preview frame based on whether faces are
+        /// already being tracked and how many are currently visible.
+        /// </summary>
+        /// <returns>The maximum dimension that should be used for the next ML frame.</returns>
         private int ResolveCurrentMlMaxDimension()
         {
             DetectionSnapshot? snapshot;
@@ -495,6 +572,12 @@ namespace CameraTests.UI
             return Math.Min(configuredMax, Math.Max(64, TrackedMultiFaceMlMaxDimension));
         }
 
+        /// <summary>
+        /// Resizes the reusable ML staging buffer when its current capacity does not match the required
+        /// byte count for the next converted frame.
+        /// </summary>
+        /// <param name="bufferIndex">The ML staging buffer to verify.</param>
+        /// <param name="requiredBytes">The exact number of bytes needed for the converted frame.</param>
         private void EnsureMlBufferSize(int bufferIndex, int requiredBytes)
         {
             if (_mlFrameBuffers[bufferIndex].Length == requiredBytes)
@@ -503,6 +586,11 @@ namespace CameraTests.UI
             _mlFrameBuffers[bufferIndex] = new byte[requiredBytes];
         }
 
+        /// <summary>
+        /// Draws the sample's recording-state diagnostics directly into the current preview or recording
+        /// frame.
+        /// </summary>
+        /// <param name="frame">The drawable camera frame that should receive the overlay content.</param>
         public void DrawOverlay(DrawableFrame frame)
         {
             SKPaint paint;
@@ -625,6 +713,12 @@ namespace CameraTests.UI
         private DeviceOrientation _rectOrientationLocked = DeviceOrientation.Unknown;
         public bool LockOrientation { get; set; }
 
+        /// <summary>
+        /// Maps the current video format to a baseline divider used to keep DrawnUI overlay scaling
+        /// visually consistent across different capture resolutions.
+        /// </summary>
+        /// <param name="smallSize">The smaller dimension of the current capture format.</param>
+        /// <returns>A divider used when converting capture size into overlay scale.</returns>
         float GetOverlayBaseDivider(float smallSize)
         {
             var setting = smallSize;
@@ -640,6 +734,10 @@ namespace CameraTests.UI
             };
         }
 
+        /// <summary>
+        /// Recomputes the overlay scaling factor after a video format change so DrawnUI overlay layouts
+        /// remain proportionate on preview and recorded frames.
+        /// </summary>
         void AdjustOverlayScale()
         {
             var format = this.CurrentVideoFormat;
@@ -653,6 +751,11 @@ namespace CameraTests.UI
             _overlayScaleChanged = Math.Max(formatWidth, formatHeight) / baseDivider;
         }
 
+        /// <summary>
+        /// Renders DrawnUI overlay layouts, face overlays, and lightweight recording diagnostics for each
+        /// preview or recording frame that passes through the camera pipeline.
+        /// </summary>
+        /// <param name="frame">The frame currently being processed for preview or recording output.</param>
         void OnFrameProcessing(DrawableFrame frame)
         {
             bool DrawOverlay(SkiaLayout layout, bool skipRendering)
@@ -855,6 +958,8 @@ namespace CameraTests.UI
                 DrawOverlay(OverlayRecording, false);
             }
 
+            DrawDetectionOverlay(frame);
+
             //if (frame.IsPreview)
             {
                 // draw frame indicator
@@ -885,9 +990,14 @@ namespace CameraTests.UI
                 }
             }
 
-            DrawDetectionOverlay(frame);
+
         }
 
+        /// <summary>
+        /// Draws face detection results as an overlay on the given frame. The appearance and smoothing of the overlay
+        /// are determined by the current detection mode and filter settings.   
+        /// </summary>
+        /// <param name="frame"></param>
         private void DrawDetectionOverlay(DrawableFrame frame)
         {
             var rendered = GetRenderedDetectionState();
@@ -913,6 +1023,11 @@ namespace CameraTests.UI
             }
         }
 
+        /// <summary>
+        /// Produces the rendered detection state used by the overlay renderer, applying prediction,
+        /// deadzone logic, interpolation, and optional One Euro filtering as required by the current mode.
+        /// </summary>
+        /// <returns>The current rendered detection state, or <see langword="null"/> when there is nothing to draw.</returns>
         private RenderedDetectionState? GetRenderedDetectionState()
         {
             lock (_detectionSync)
@@ -1080,6 +1195,12 @@ namespace CameraTests.UI
                 completedAtTicks);
         }
 
+        /// <summary>
+        /// Converts elapsed time since the last rendered update into an exponential interpolation factor
+        /// for smooth overlay transitions.
+        /// </summary>
+        /// <param name="nowTicks">The current timestamp in <see cref="Stopwatch"/> ticks.</param>
+        /// <returns>A normalized interpolation factor in the range from 0 to 1.</returns>
         private float ComputeOverlaySmoothingFactor(long nowTicks)
         {
             if (OverlaySmoothingMs <= 0)
@@ -1095,6 +1216,13 @@ namespace CameraTests.UI
             return (float)(1d - Math.Exp(-elapsedMs / OverlaySmoothingMs));
         }
 
+        /// <summary>
+        /// Checks whether two raw detection snapshots are structurally compatible for smoothing or
+        /// prediction.
+        /// </summary>
+        /// <param name="current">The earlier detection snapshot.</param>
+        /// <param name="target">The later detection snapshot.</param>
+        /// <returns><see langword="true"/> when both snapshots can be blended landmark-by-landmark.</returns>
         private static bool CanSmoothDetections(DetectionSnapshot current, DetectionSnapshot target)
         {
             if (current.Rotation != target.Rotation)
@@ -1112,6 +1240,13 @@ namespace CameraTests.UI
             return true;
         }
 
+        /// <summary>
+        /// Checks whether the current rendered state and a new detection snapshot have compatible shape
+        /// so one can be updated toward the other in place.
+        /// </summary>
+        /// <param name="current">The already-rendered detection state.</param>
+        /// <param name="target">The incoming detection snapshot.</param>
+        /// <returns><see langword="true"/> when both states describe the same landmark topology.</returns>
         private static bool CanSmoothRenderedDetection(RenderedDetectionState current, DetectionSnapshot target)
         {
             if (current.Rotation != target.Rotation)
@@ -1129,6 +1264,14 @@ namespace CameraTests.UI
             return true;
         }
 
+        /// <summary>
+        /// Determines whether every landmark in the target snapshot remains inside the configured deadzone
+        /// relative to the currently rendered state.
+        /// </summary>
+        /// <param name="current">The currently rendered landmark state.</param>
+        /// <param name="target">The candidate detection snapshot.</param>
+        /// <param name="deadzone">The per-axis normalized deadzone threshold.</param>
+        /// <returns><see langword="true"/> when all landmarks remain inside the deadzone.</returns>
         private static bool IsRenderedDetectionWithinDeadzone(RenderedDetectionState current, DetectionSnapshot target, float deadzone)
         {
             if (deadzone <= 0f)
@@ -1158,6 +1301,12 @@ namespace CameraTests.UI
             return true;
         }
 
+        /// <summary>
+        /// Clones a raw detection snapshot into mutable overlay state that can then be interpolated or
+        /// filtered across subsequent frames.
+        /// </summary>
+        /// <param name="snapshot">The snapshot to clone.</param>
+        /// <returns>A mutable rendered state copy of <paramref name="snapshot"/>.</returns>
         private static RenderedDetectionState CreateRenderedDetectionState(DetectionSnapshot snapshot)
         {
             var faces = new List<DetectedFace>(snapshot.Result.Faces.Count);
@@ -1175,6 +1324,12 @@ namespace CameraTests.UI
             return new RenderedDetectionState(faces, snapshot.Rotation, snapshot.CompletedAtTicks);
         }
 
+        /// <summary>
+        /// Copies a raw detection snapshot into an existing rendered state without reallocating landmark
+        /// collections.
+        /// </summary>
+        /// <param name="source">The source detection snapshot.</param>
+        /// <param name="destination">The rendered state to overwrite.</param>
         private static void CopyDetectionSnapshotToRenderedState(DetectionSnapshot source, RenderedDetectionState destination)
         {
             destination.Rotation = source.Rotation;
@@ -1191,6 +1346,14 @@ namespace CameraTests.UI
             }
         }
 
+        /// <summary>
+        /// Moves each rendered landmark toward the target snapshot using exponential interpolation while
+        /// honoring the configured deadzone.
+        /// </summary>
+        /// <param name="current">The rendered state to mutate.</param>
+        /// <param name="target">The target snapshot to move toward.</param>
+        /// <param name="amount">The interpolation amount in the range from 0 to 1.</param>
+        /// <param name="deadzone">The per-axis normalized deadzone threshold.</param>
         private static void InterpolateRenderedStateTowardsSnapshot(RenderedDetectionState current, DetectionSnapshot target, float amount, float deadzone)
         {
             current.Rotation = target.Rotation;
@@ -1216,16 +1379,38 @@ namespace CameraTests.UI
             }
         }
 
+        /// <summary>
+        /// Linearly interpolates between two scalar values.
+        /// </summary>
+        /// <param name="from">The starting value.</param>
+        /// <param name="to">The target value.</param>
+        /// <param name="amount">The interpolation amount in the range from 0 to 1.</param>
+        /// <returns>The interpolated value.</returns>
         private static float Lerp(float from, float to, float amount)
         {
             return from + ((to - from) * amount);
         }
 
+        /// <summary>
+        /// Applies a deadzone to a scalar value so tiny movements are ignored and the current value is
+        /// preserved.
+        /// </summary>
+        /// <param name="current">The current rendered value.</param>
+        /// <param name="target">The candidate target value.</param>
+        /// <param name="deadzone">The threshold under which the current value should be kept.</param>
+        /// <returns>The kept or updated value after deadzone evaluation.</returns>
         private static float ApplyDeadzone(float current, float target, float deadzone)
         {
             return Math.Abs(target - current) <= deadzone ? current : target;
         }
 
+        /// <summary>
+        /// Copies a detection snapshot into the rendered state using independent deadzone checks per
+        /// landmark axis so still faces remain visually stable without interpolation lag.
+        /// </summary>
+        /// <param name="source">The source detection snapshot.</param>
+        /// <param name="destination">The rendered state to update in place.</param>
+        /// <param name="deadzone">The per-axis normalized deadzone threshold.</param>
         private static void CopyWithPerLandmarkDeadzone(DetectionSnapshot source, RenderedDetectionState destination, float deadzone)
         {
             destination.Rotation = source.Rotation;
@@ -1249,6 +1434,12 @@ namespace CameraTests.UI
             }
         }
 
+        /// <summary>
+        /// Creates a One Euro filter pair for every landmark coordinate in the supplied snapshot so mask
+        /// rendering can be stabilized over time.
+        /// </summary>
+        /// <param name="snapshot">The detection snapshot used to seed the filter state.</param>
+        /// <param name="nowTicks">The timestamp assigned to the initial filter sample.</param>
         private void InitializeLandmarkFilters(DetectionSnapshot snapshot, long nowTicks)
         {
             int total = 0;
@@ -1270,6 +1461,13 @@ namespace CameraTests.UI
             }
         }
 
+        /// <summary>
+        /// Filters all landmark coordinates from the source snapshot into the rendered state using the
+        /// previously initialized One Euro filters.
+        /// </summary>
+        /// <param name="source">The latest detection snapshot.</param>
+        /// <param name="destination">The rendered state that should receive filtered coordinates.</param>
+        /// <param name="nowTicks">The current timestamp in <see cref="Stopwatch"/> ticks.</param>
         private void ApplyOneEuroFilters(DetectionSnapshot source, RenderedDetectionState destination, long nowTicks)
         {
             destination.Rotation = source.Rotation;
@@ -1291,6 +1489,11 @@ namespace CameraTests.UI
             }
         }
 
+        /// <summary>
+        /// Lazily creates and updates the Skia paints used by landmark, rectangle, and mask overlays for
+        /// the current frame scale.
+        /// </summary>
+        /// <param name="scale">The frame scale used to size strokes consistently across outputs.</param>
         private void EnsureDetectionPaints(float scale)
         {
             _detectionStrokePaint ??= new SKPaint
@@ -1318,6 +1521,13 @@ namespace CameraTests.UI
             _detectionStrokePaint.StrokeWidth = Math.Max(2f, 2f * scale);
         }
 
+
+        /// <summary>
+        /// Draws every normalized landmark for a face as a dot overlay on the current frame.
+        /// </summary>
+        /// <param name="frame">The frame receiving the overlay.</param>
+        /// <param name="face">The detected face whose landmarks should be rendered.</param>
+        /// <param name="rotation">The detector-space rotation that must be projected into frame space.</param>
         private void DrawFaceLandmarks(DrawableFrame frame, DetectedFace face, int rotation)
         {
             float radius = Math.Max(2f, 2.5f * frame.Scale);
@@ -1328,6 +1538,12 @@ namespace CameraTests.UI
             }
         }
 
+        /// <summary>
+        /// `DrawMode == DetectionType.Rectangle` draws a bounding rectangle around each detected face.
+        /// </summary>
+        /// <param name="frame"></param>
+        /// <param name="face"></param>
+        /// <param name="rotation"></param>
         private void DrawFaceRectangle(DrawableFrame frame, DetectedFace face, int rotation)
         {
             if (face.Landmarks.Count == 0)
@@ -1350,6 +1566,12 @@ namespace CameraTests.UI
             frame.Canvas.DrawRect(minX * frame.Width, minY * frame.Height, (maxX - minX) * frame.Width, (maxY - minY) * frame.Height, _detectionStrokePaint);
         }
 
+        /// <summary>
+        /// Draws the configured bitmap mask aligned to key facial anchor points for the current face.
+        /// </summary>
+        /// <param name="frame">The frame receiving the overlay.</param>
+        /// <param name="face">The detected face whose landmarks define mask position and rotation.</param>
+        /// <param name="rotation">The detector-space rotation that must be projected into frame space.</param>
         private void DrawFaceMask(DrawableFrame frame, DetectedFace face, int rotation)
         {
             if (face.Landmarks.Count < 455 || MaskBitmap == null)
@@ -1402,6 +1624,14 @@ namespace CameraTests.UI
             frame.Canvas.Restore();
         }
 
+        /// <summary>
+        /// Projects a normalized detector-space landmark into normalized frame space by applying the
+        /// detector rotation and optional horizontal mirroring.
+        /// </summary>
+        /// <param name="point">The detector-space normalized landmark.</param>
+        /// <param name="rotation">The detector rotation to apply.</param>
+        /// <param name="mirrorX">Whether to mirror the projected point horizontally.</param>
+        /// <returns>The projected normalized point in frame space.</returns>
         private static NormalizedPoint ProjectPoint(NormalizedPoint point, int rotation, bool mirrorX)
         {
             float x = point.X;
@@ -1423,6 +1653,11 @@ namespace CameraTests.UI
             return new NormalizedPoint(x, y);
         }
 
+        /// <summary>
+        /// Normalizes any rotation value into the range 0 to 359 degrees.
+        /// </summary>
+        /// <param name="rotation">The raw rotation value.</param>
+        /// <returns>The normalized clockwise rotation in degrees.</returns>
         private static int NormalizeRotation(int rotation)
         {
             rotation %= 360;
@@ -1473,6 +1708,12 @@ namespace CameraTests.UI
 
         public record DetectionSnapshot
         {
+            /// <summary>
+            /// Initializes an immutable raw detection snapshot captured from the detector callback.
+            /// </summary>
+            /// <param name="result">The detected face result payload.</param>
+            /// <param name="rotation">The detector rotation associated with the result.</param>
+            /// <param name="completedAtTicks">The completion timestamp in <see cref="Stopwatch"/> ticks.</param>
             public DetectionSnapshot(FaceLandmarkResult result, int rotation, long completedAtTicks)
             {
                 Result = result;
@@ -1489,6 +1730,13 @@ namespace CameraTests.UI
 
         private sealed class RenderedDetectionState
         {
+            /// <summary>
+            /// Initializes mutable rendered detection state that can be filtered or interpolated between
+            /// detector callbacks.
+            /// </summary>
+            /// <param name="faces">The mutable face list used by the overlay renderer.</param>
+            /// <param name="rotation">The detector rotation associated with the state.</param>
+            /// <param name="completedAtTicks">The timestamp of the source detection state.</param>
             public RenderedDetectionState(List<DetectedFace> faces, int rotation, long completedAtTicks)
             {
                 Faces = faces;
@@ -1525,6 +1773,14 @@ namespace CameraTests.UI
             private float _dxPrev;
             private long _lastTicks;
 
+            /// <summary>
+            /// Initializes a One Euro filter seeded with the first observed value.
+            /// </summary>
+            /// <param name="minCutoff">The minimum cutoff frequency in hertz.</param>
+            /// <param name="beta">The speed coefficient that increases cutoff during fast movement.</param>
+            /// <param name="dCutoff">The derivative cutoff frequency in hertz.</param>
+            /// <param name="initialValue">The initial signal value.</param>
+            /// <param name="initialTicks">The timestamp of the initial sample.</param>
             public OneEuroFilter(float minCutoff, float beta, float dCutoff, float initialValue, long initialTicks)
             {
                 _minCutoff = minCutoff;
@@ -1535,6 +1791,12 @@ namespace CameraTests.UI
                 _lastTicks = initialTicks;
             }
 
+            /// <summary>
+            /// Filters a new scalar sample and returns the smoothed output.
+            /// </summary>
+            /// <param name="x">The new sample value.</param>
+            /// <param name="ticks">The sample timestamp in <see cref="Stopwatch"/> ticks.</param>
+            /// <returns>The filtered signal value.</returns>
             public float Filter(float x, long ticks)
             {
                 var dtSeconds = Stopwatch.GetElapsedTime(_lastTicks, ticks).TotalSeconds;
@@ -1559,6 +1821,13 @@ namespace CameraTests.UI
                 return _xPrev;
             }
 
+            /// <summary>
+            /// Converts a cutoff frequency and time delta into the smoothing coefficient used by the
+            /// One Euro filter's low-pass step.
+            /// </summary>
+            /// <param name="dt">The elapsed time in seconds since the previous sample.</param>
+            /// <param name="cutoff">The active cutoff frequency in hertz.</param>
+            /// <returns>The low-pass coefficient for the given sample interval.</returns>
             private static float ComputeAlpha(float dt, float cutoff)
             {
                 var tau = 1f / (2f * MathF.PI * cutoff);

@@ -105,7 +105,7 @@ public partial class MainPage : ContentPage
 
     private async void OnModeChanged(object? sender, EventArgs e)
     {
-        if (LandmarkDraw != null && ModePicker != null)
+        if (ModePicker != null)
         {
             var drawMode = ModePicker.SelectedIndex switch
             {
@@ -115,12 +115,11 @@ public partial class MainPage : ContentPage
                 _ => DetectionType.Landmark
             };
 
-            LandmarkDraw.DrawMode = drawMode;
             CameraControl.DrawMode = drawMode;
 
             MaskConfiguration? config = null;
 
-            if (LandmarkDraw.DrawMode == DetectionType.Mask)
+            if (drawMode == DetectionType.Mask)
             {
                 try
                 {
@@ -142,13 +141,6 @@ public partial class MainPage : ContentPage
                         }
                     };
 
-                    if (LandmarkDraw.ActiveMaskConfig?.Filename != config.Filename || LandmarkDraw.MaskImage == null)
-                    {
-                        LandmarkDraw.ActiveMaskConfig = config;
-                        using var stream = await FileSystem.OpenAppPackageFileAsync(config.Filename);
-                        LandmarkDraw.MaskImage = Microsoft.Maui.Graphics.Platform.PlatformImage.FromStream(stream);
-                    }
-
                     await CameraControl.SetMaskConfigurationAsync(config);
                 }
                 catch (Exception ex)
@@ -158,13 +150,7 @@ public partial class MainPage : ContentPage
             }
             else
             {
-                LandmarkDraw.ActiveMaskConfig = null;
                 await CameraControl.SetMaskConfigurationAsync(null);
-            }
-
-            if (LandmarkOverlay.IsVisible)
-            {
-                LandmarkOverlay.Invalidate();
             }
         }
     }
@@ -186,10 +172,6 @@ public partial class MainPage : ContentPage
             SelectedImage.Source = ImageSource.FromStream(() => displayStream);
             SelectedImage.IsVisible = true;
 
-            // Reset overlay
-            LandmarkDraw.Update(null);
-            LandmarkOverlay.IsVisible = false;
-
             // Show spinner
             StatusLabel.Text = "Detecting landmarks...";
             //Spinner.IsRunning = true;
@@ -203,11 +185,6 @@ public partial class MainPage : ContentPage
             {
                 detection = await _detector.DetectAsync(detectionStream);
             }
-
-            // Update overlay
-            LandmarkDraw.Update(detection);
-            LandmarkOverlay.IsVisible = true;
-            LandmarkOverlay.Invalidate();
 
             var faceCount = detection.Faces.Count;
             StatusLabel.Text = faceCount switch
