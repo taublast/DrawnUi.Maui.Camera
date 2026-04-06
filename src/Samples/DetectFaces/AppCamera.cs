@@ -88,6 +88,11 @@ namespace CameraTests.UI
 
         private IFaceLandmarkDetector? _detector;
 
+        /// <summary>
+        /// Gets or sets the face-landmark detector used for still-image and live preview processing.
+        /// Setting this property updates event subscriptions and pushes the current camera settings into
+        /// the new detector instance.
+        /// </summary>
         public IFaceLandmarkDetector? Detector
         {
             get => _detector;
@@ -114,12 +119,25 @@ namespace CameraTests.UI
             }
         }
 
+        /// <summary>
+        /// Gets or sets which detection overlay style should be rendered for faces.
+        /// </summary>
         public DetectionType DrawMode { get; set; } = DetectionType.Landmark;
 
+        /// <summary>
+        /// Gets or sets whether live preview frames should be sent through the detector.
+        /// </summary>
         public bool EnablePreviewDetection { get; set; } = true;
 
+        /// <summary>
+        /// Gets or sets whether preview detection should keep reusing the first prepared ML frame instead
+        /// of resizing each incoming preview frame again.
+        /// </summary>
         public bool ReuseFirstMlFrameForPreviewDetection { get; set; } = false;
 
+        /// <summary>
+        /// Gets or sets the maximum number of faces the detector should attempt to track.
+        /// </summary>
         public int MaxNumFaces
         {
             get => _maxNumFaces;
@@ -130,14 +148,32 @@ namespace CameraTests.UI
             }
         }
 
+        /// <summary>
+        /// Gets or sets the default maximum detector input dimension used when no faces are currently
+        /// being tracked.
+        /// </summary>
         public int MlMaxDimension { get; set; } = DefaultMlMaxDimension;
 
+        /// <summary>
+        /// Gets or sets the reduced detector input dimension used while one face is already tracked.
+        /// </summary>
         public int TrackedSingleFaceMlMaxDimension { get; set; } = DefaultTrackedSingleFaceMlMaxDimension;
 
+        /// <summary>
+        /// Gets or sets the reduced detector input dimension used while multiple faces are already tracked.
+        /// </summary>
         public int TrackedMultiFaceMlMaxDimension { get; set; } = DefaultTrackedMultiFaceMlMaxDimension;
 
+        /// <summary>
+        /// Gets or sets the time constant used when interpolating overlay landmarks toward the latest
+        /// detection.
+        /// </summary>
         public double OverlaySmoothingMs { get; set; } = DefaultOverlaySmoothingMs;
 
+        /// <summary>
+        /// Gets or sets the normalized deadzone applied before tiny landmark movements are allowed to
+        /// update the rendered overlay.
+        /// </summary>
         public float OverlayDeadzone { get; set; } = DefaultOverlayDeadzone;
 
         /// <summary>
@@ -146,10 +182,19 @@ namespace CameraTests.UI
         /// </summary>
         public bool EnableOverlayInterpolation { get; set; } = false;
 
+        /// <summary>
+        /// Raised when a preview detection result has been produced and published as the newest face state.
+        /// </summary>
         public event EventHandler<FaceLandmarkResult>? PreviewDetectionUpdated;
 
+        /// <summary>
+        /// Raised with timing and sizing metrics for each completed preview-detection request.
+        /// </summary>
         public event EventHandler<PreviewDetectionMetrics>? PreviewDetectionMeasured;
 
+        /// <summary>
+        /// Raised when a preview-detection request fails.
+        /// </summary>
         public event EventHandler<Exception>? PreviewDetectionFailed;
 
         private int _maxNumFaces = 2;
@@ -204,12 +249,19 @@ namespace CameraTests.UI
             base.OnDisposing();
         }
 
+        /// <summary>
+        /// Backing bindable property for <see cref="UseGain"/>.
+        /// </summary>
         public static readonly BindableProperty UseGainProperty = BindableProperty.Create(
             nameof(UseGain),
             typeof(bool),
             typeof(AppCamera),
             false);
 
+        /// <summary>
+        /// Gets or sets whether microphone PCM samples should be amplified before they continue through
+        /// the sample pipeline.
+        /// </summary>
         public bool UseGain
         {
             get => (bool)GetValue(UseGainProperty);
@@ -223,6 +275,9 @@ namespace CameraTests.UI
 
 
 
+        /// <summary>
+        /// Raised whenever a captured audio sample becomes available to the sample app.
+        /// </summary>
         public event Action<AudioSample>? OnAudioSample; 
 
         /// <summary>
@@ -430,15 +485,18 @@ namespace CameraTests.UI
 
             var detectionMilliseconds = Stopwatch.GetElapsedTime(e.Request.EnqueuedAtTicks, completedAtTicks).TotalMilliseconds;
 
-            //if we had not drawnui context should call this on ui-thread probably
-            PreviewDetectionMeasured?.Invoke(this, new PreviewDetectionMetrics(
-                e.Request.ResizeMilliseconds,
-                detectionMilliseconds,
-                e.Request.ReusedCachedFrame,
-                e.Request.Width,
-                e.Request.Height,
-                e.Request.Rotation));
-            PreviewDetectionUpdated?.Invoke(this, e.Result);
+            //while we use maui view we need ui-thread, can remove after all is drawn
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                PreviewDetectionMeasured?.Invoke(this, new PreviewDetectionMetrics(
+                    e.Request.ResizeMilliseconds,
+                    detectionMilliseconds,
+                    e.Request.ReusedCachedFrame,
+                    e.Request.Width,
+                    e.Request.Height,
+                    e.Request.Rotation));
+                PreviewDetectionUpdated?.Invoke(this, e.Result);
+            });
 
             FinishPreviewDetection();
         }
@@ -711,6 +769,10 @@ namespace CameraTests.UI
         private VideoFormat? _adaptedToFormat;
         private DeviceOrientation _rectOrientation = DeviceOrientation.Unknown;
         private DeviceOrientation _rectOrientationLocked = DeviceOrientation.Unknown;
+        /// <summary>
+        /// Gets or sets whether overlay orientation should remain fixed instead of adapting to live device
+        /// orientation changes while rendering.
+        /// </summary>
         public bool LockOrientation { get; set; }
 
         /// <summary>
@@ -1054,21 +1116,25 @@ namespace CameraTests.UI
                     return _renderedDetection;
                 }
 
+                DetectionSnapshot? predictionPrevious = null;
+                float predictionAlpha = 0f;
+                var usePrediction = EnablePrediction
+                    && TryComputePredictionAlpha(_previousDetection, target, nowTicks, out predictionPrevious, out predictionAlpha);
+
                 // Extrapolate ahead of the latest detection using inter-detection velocity.
                 // This compensates for pipeline latency so the overlay tracks the live face
                 // rather than where it was when the frame was captured.
-                var predicted = EnablePrediction
-                    ? ComputePredictedDetection(_previousDetection, target, nowTicks)
-                    : target;
-
                 // One Euro Filter path — smooth movement for masks (hats, face overlays).
                 // Dots and rectangles use the zero-lag per-landmark deadzone path below.
                 if (EnableOneEuroFilter && DrawMode == DetectionType.Mask)
                 {
-                    if (_renderedDetection == null || _filtersX == null || !CanSmoothRenderedDetection(_renderedDetection, predicted))
+                    if (_renderedDetection == null || _filtersX == null || !CanSmoothRenderedDetection(_renderedDetection, target))
                     {
+                        var predicted = usePrediction
+                            ? ExtrapolateDetectionSnapshot(predictionPrevious!, target, predictionAlpha, nowTicks)
+                            : target;
                         _renderedDetection = CreateRenderedDetectionState(predicted);
-                        InitializeLandmarkFilters(predicted, nowTicks);
+                        InitializeLandmarkFilters(_renderedDetection, nowTicks);
                         _lastRenderedDetectionUpdateTicks = nowTicks;
                         _lastConsumedTarget = target;
                         return _renderedDetection;
@@ -1077,7 +1143,15 @@ namespace CameraTests.UI
                     if (!EnablePrediction && ReferenceEquals(target, _lastConsumedTarget))
                         return _renderedDetection;
 
-                    ApplyOneEuroFilters(predicted, _renderedDetection, nowTicks);
+                    if (usePrediction)
+                    {
+                        ApplyPredictedOneEuroFilters(predictionPrevious!, target, predictionAlpha, nowTicks, _renderedDetection);
+                    }
+                    else
+                    {
+                        ApplyOneEuroFilters(target, _renderedDetection, nowTicks);
+                    }
+
                     _lastRenderedDetectionUpdateTicks = nowTicks;
                     _lastConsumedTarget = target;
                     return _renderedDetection;
@@ -1088,8 +1162,11 @@ namespace CameraTests.UI
                 _filtersX = null;
                 _filtersY = null;
 
-                if (_renderedDetection == null || !CanSmoothRenderedDetection(_renderedDetection, predicted))
+                if (_renderedDetection == null || !CanSmoothRenderedDetection(_renderedDetection, target))
                 {
+                    var predicted = usePrediction
+                        ? ExtrapolateDetectionSnapshot(predictionPrevious!, target, predictionAlpha, nowTicks)
+                        : target;
                     _renderedDetection = CreateRenderedDetectionState(predicted);
                     _lastRenderedDetectionUpdateTicks = nowTicks;
                     _lastConsumedTarget = target;
@@ -1098,7 +1175,20 @@ namespace CameraTests.UI
 
                 if (!EnableOverlayInterpolation)
                 {
-                    CopyWithPerLandmarkDeadzone(predicted, _renderedDetection, OverlayDeadzone);
+                    if (usePrediction)
+                    {
+                        CopyPredictedWithPerLandmarkDeadzone(
+                            predictionPrevious!,
+                            target,
+                            predictionAlpha,
+                            nowTicks,
+                            _renderedDetection,
+                            OverlayDeadzone);
+                    }
+                    else
+                    {
+                        CopyWithPerLandmarkDeadzone(target, _renderedDetection, OverlayDeadzone);
+                    }
 
                     _lastRenderedDetectionUpdateTicks = nowTicks;
                     _lastConsumedTarget = target;
@@ -1108,17 +1198,83 @@ namespace CameraTests.UI
                 var smoothingFactor = ComputeOverlaySmoothingFactor(nowTicks);
                 if (smoothingFactor >= 1f)
                 {
-                    CopyDetectionSnapshotToRenderedState(predicted, _renderedDetection);
+                    if (usePrediction)
+                    {
+                        CopyPredictedDetectionToRenderedState(predictionPrevious!, target, predictionAlpha, nowTicks, _renderedDetection);
+                    }
+                    else
+                    {
+                        CopyDetectionSnapshotToRenderedState(target, _renderedDetection);
+                    }
+
                     _lastConsumedTarget = target; // mark converged so fast path can skip next frames
                 }
                 else if (smoothingFactor > 0f)
                 {
-                    InterpolateRenderedStateTowardsSnapshot(_renderedDetection, predicted, smoothingFactor, OverlayDeadzone);
+                    if (usePrediction)
+                    {
+                        InterpolateRenderedStateTowardsPredictedSnapshot(
+                            _renderedDetection,
+                            predictionPrevious!,
+                            target,
+                            predictionAlpha,
+                            nowTicks,
+                            smoothingFactor,
+                            OverlayDeadzone);
+                    }
+                    else
+                    {
+                        InterpolateRenderedStateTowardsSnapshot(_renderedDetection, target, smoothingFactor, OverlayDeadzone);
+                    }
                 }
 
                 _lastRenderedDetectionUpdateTicks = nowTicks;
                 return _renderedDetection;
             }
+        }
+
+        /// <summary>
+        /// Computes the extrapolation factor for prediction without allocating a temporary predicted
+        /// detection graph. The returned alpha can then be applied directly while updating the rendered
+        /// landmark state in place.
+        /// </summary>
+        /// <param name="previous">The previous completed detection snapshot.</param>
+        /// <param name="target">The latest completed detection snapshot.</param>
+        /// <param name="nowTicks">The current render timestamp in <see cref="Stopwatch"/> ticks.</param>
+        /// <param name="compatiblePrevious">Receives the compatible previous snapshot when prediction is possible.</param>
+        /// <param name="alpha">Receives the extrapolation factor when prediction is possible.</param>
+        /// <returns><see langword="true"/> when prediction should be applied; otherwise <see langword="false"/>.</returns>
+        private static bool TryComputePredictionAlpha(
+            DetectionSnapshot? previous,
+            DetectionSnapshot target,
+            long nowTicks,
+            out DetectionSnapshot? compatiblePrevious,
+            out float alpha)
+        {
+            compatiblePrevious = null;
+            alpha = 0f;
+
+            if (previous == null || !CanSmoothDetections(previous, target))
+                return false;
+
+            var sampleDtMs = Stopwatch.GetElapsedTime(previous.CompletedAtTicks, target.CompletedAtTicks).TotalMilliseconds;
+            if (sampleDtMs <= 0)
+                return false;
+
+            var elapsedMs = Stopwatch.GetElapsedTime(target.CompletedAtTicks, nowTicks).TotalMilliseconds;
+            if (elapsedMs <= 0)
+                return false;
+
+            var predictMs = Math.Min(elapsedMs, sampleDtMs * 1.5);
+            alpha = (float)(predictMs / sampleDtMs);
+            if (alpha < 0.01f)
+            {
+                alpha = 0f;
+                return false;
+            }
+
+            compatiblePrevious = previous;
+            return true;
         }
 
         /// <summary>
@@ -1193,6 +1349,42 @@ namespace CameraTests.UI
                 },
                 target.Rotation,
                 completedAtTicks);
+        }
+
+        /// <summary>
+        /// Copies predicted landmark positions directly into the rendered state without allocating an
+        /// intermediate predicted detection snapshot.
+        /// </summary>
+        /// <param name="previous">The previous completed detection snapshot.</param>
+        /// <param name="target">The latest completed detection snapshot.</param>
+        /// <param name="alpha">The extrapolation factor returned by <see cref="TryComputePredictionAlpha"/>.</param>
+        /// <param name="completedAtTicks">The render-time timestamp assigned to the predicted state.</param>
+        /// <param name="destination">The rendered state to overwrite.</param>
+        private static void CopyPredictedDetectionToRenderedState(
+            DetectionSnapshot previous,
+            DetectionSnapshot target,
+            float alpha,
+            long completedAtTicks,
+            RenderedDetectionState destination)
+        {
+            destination.Rotation = target.Rotation;
+            destination.CompletedAtTicks = completedAtTicks;
+
+            for (int faceIndex = 0; faceIndex < destination.Faces.Count; faceIndex++)
+            {
+                var destinationLandmarks = destination.Faces[faceIndex].Landmarks;
+                var previousLandmarks = previous.Result.Faces[faceIndex].Landmarks;
+                var targetLandmarks = target.Result.Faces[faceIndex].Landmarks;
+
+                for (int landmarkIndex = 0; landmarkIndex < destinationLandmarks.Count; landmarkIndex++)
+                {
+                    var prev = previousLandmarks[landmarkIndex];
+                    var next = targetLandmarks[landmarkIndex];
+                    destinationLandmarks[landmarkIndex] = new NormalizedPoint(
+                        PredictValue(prev.X, next.X, alpha),
+                        PredictValue(prev.Y, next.Y, alpha));
+                }
+            }
         }
 
         /// <summary>
@@ -1380,6 +1572,53 @@ namespace CameraTests.UI
         }
 
         /// <summary>
+        /// Moves each rendered landmark toward a predicted landmark position computed from the previous
+        /// and current detector snapshots, avoiding allocation of a temporary predicted snapshot.
+        /// </summary>
+        /// <param name="current">The rendered state to mutate.</param>
+        /// <param name="previous">The previous completed detection snapshot.</param>
+        /// <param name="target">The latest completed detection snapshot.</param>
+        /// <param name="alpha">The extrapolation factor returned by <see cref="TryComputePredictionAlpha"/>.</param>
+        /// <param name="completedAtTicks">The render-time timestamp assigned to the predicted state.</param>
+        /// <param name="amount">The interpolation amount in the range from 0 to 1.</param>
+        /// <param name="deadzone">The per-axis normalized deadzone threshold.</param>
+        private static void InterpolateRenderedStateTowardsPredictedSnapshot(
+            RenderedDetectionState current,
+            DetectionSnapshot previous,
+            DetectionSnapshot target,
+            float alpha,
+            long completedAtTicks,
+            float amount,
+            float deadzone)
+        {
+            current.Rotation = target.Rotation;
+            current.CompletedAtTicks = completedAtTicks;
+
+            for (int faceIndex = 0; faceIndex < target.Result.Faces.Count; faceIndex++)
+            {
+                var currentFace = current.Faces[faceIndex];
+                var previousFace = previous.Result.Faces[faceIndex];
+                var targetFace = target.Result.Faces[faceIndex];
+
+                for (int landmarkIndex = 0; landmarkIndex < targetFace.Landmarks.Count; landmarkIndex++)
+                {
+                    var from = currentFace.Landmarks[landmarkIndex];
+                    var prev = previousFace.Landmarks[landmarkIndex];
+                    var next = targetFace.Landmarks[landmarkIndex];
+
+                    float predictedX = PredictValue(prev.X, next.X, alpha);
+                    float predictedY = PredictValue(prev.Y, next.Y, alpha);
+                    float targetX = ApplyDeadzone(from.X, predictedX, deadzone);
+                    float targetY = ApplyDeadzone(from.Y, predictedY, deadzone);
+
+                    currentFace.Landmarks[landmarkIndex] = new NormalizedPoint(
+                        Lerp(from.X, targetX, amount),
+                        Lerp(from.Y, targetY, amount));
+                }
+            }
+        }
+
+        /// <summary>
         /// Linearly interpolates between two scalar values.
         /// </summary>
         /// <param name="from">The starting value.</param>
@@ -1389,6 +1628,18 @@ namespace CameraTests.UI
         private static float Lerp(float from, float to, float amount)
         {
             return from + ((to - from) * amount);
+        }
+
+        /// <summary>
+        /// Extrapolates one scalar coordinate from the previous detector value toward the target value.
+        /// </summary>
+        /// <param name="previous">The previous detector value.</param>
+        /// <param name="target">The latest detector value.</param>
+        /// <param name="alpha">The extrapolation factor.</param>
+        /// <returns>The predicted coordinate value.</returns>
+        private static float PredictValue(float previous, float target, float alpha)
+        {
+            return target + alpha * (target - previous);
         }
 
         /// <summary>
@@ -1435,22 +1686,65 @@ namespace CameraTests.UI
         }
 
         /// <summary>
+        /// Copies predicted landmark positions into the rendered state using per-axis deadzone checks so
+        /// the zero-lag preview path avoids both jitter and temporary prediction allocations.
+        /// </summary>
+        /// <param name="previous">The previous completed detection snapshot.</param>
+        /// <param name="target">The latest completed detection snapshot.</param>
+        /// <param name="alpha">The extrapolation factor returned by <see cref="TryComputePredictionAlpha"/>.</param>
+        /// <param name="completedAtTicks">The render-time timestamp assigned to the predicted state.</param>
+        /// <param name="destination">The rendered state to update in place.</param>
+        /// <param name="deadzone">The per-axis normalized deadzone threshold.</param>
+        private static void CopyPredictedWithPerLandmarkDeadzone(
+            DetectionSnapshot previous,
+            DetectionSnapshot target,
+            float alpha,
+            long completedAtTicks,
+            RenderedDetectionState destination,
+            float deadzone)
+        {
+            destination.Rotation = target.Rotation;
+            destination.CompletedAtTicks = completedAtTicks;
+
+            for (int faceIndex = 0; faceIndex < destination.Faces.Count; faceIndex++)
+            {
+                var destinationLandmarks = destination.Faces[faceIndex].Landmarks;
+                var previousLandmarks = previous.Result.Faces[faceIndex].Landmarks;
+                var targetLandmarks = target.Result.Faces[faceIndex].Landmarks;
+
+                for (int landmarkIndex = 0; landmarkIndex < destinationLandmarks.Count; landmarkIndex++)
+                {
+                    var current = destinationLandmarks[landmarkIndex];
+                    var prev = previousLandmarks[landmarkIndex];
+                    var next = targetLandmarks[landmarkIndex];
+
+                    float predictedX = PredictValue(prev.X, next.X, alpha);
+                    float predictedY = PredictValue(prev.Y, next.Y, alpha);
+                    float x = Math.Abs(predictedX - current.X) > deadzone ? predictedX : current.X;
+                    float y = Math.Abs(predictedY - current.Y) > deadzone ? predictedY : current.Y;
+
+                    destinationLandmarks[landmarkIndex] = new NormalizedPoint(x, y);
+                }
+            }
+        }
+
+        /// <summary>
         /// Creates a One Euro filter pair for every landmark coordinate in the supplied snapshot so mask
         /// rendering can be stabilized over time.
         /// </summary>
-        /// <param name="snapshot">The detection snapshot used to seed the filter state.</param>
+        /// <param name="state">The rendered landmark state used to seed the filter state.</param>
         /// <param name="nowTicks">The timestamp assigned to the initial filter sample.</param>
-        private void InitializeLandmarkFilters(DetectionSnapshot snapshot, long nowTicks)
+        private void InitializeLandmarkFilters(RenderedDetectionState state, long nowTicks)
         {
             int total = 0;
-            foreach (var face in snapshot.Result.Faces)
+            foreach (var face in state.Faces)
                 total += face.Landmarks.Count;
 
             _filtersX = new OneEuroFilter[total];
             _filtersY = new OneEuroFilter[total];
 
             int idx = 0;
-            foreach (var face in snapshot.Result.Faces)
+            foreach (var face in state.Faces)
             {
                 foreach (var pt in face.Landmarks)
                 {
@@ -1484,6 +1778,44 @@ namespace CameraTests.UI
                     dstLandmarks[i] = new NormalizedPoint(
                         _filtersX![idx].Filter(srcLandmarks[i].X, nowTicks),
                         _filtersY![idx].Filter(srcLandmarks[i].Y, nowTicks));
+                    idx++;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Filters predicted landmark coordinates directly into the rendered state using the previously
+        /// initialized One Euro filters.
+        /// </summary>
+        /// <param name="previous">The previous completed detection snapshot.</param>
+        /// <param name="target">The latest completed detection snapshot.</param>
+        /// <param name="alpha">The extrapolation factor returned by <see cref="TryComputePredictionAlpha"/>.</param>
+        /// <param name="nowTicks">The current timestamp in <see cref="Stopwatch"/> ticks.</param>
+        /// <param name="destination">The rendered state that should receive filtered predicted coordinates.</param>
+        private void ApplyPredictedOneEuroFilters(
+            DetectionSnapshot previous,
+            DetectionSnapshot target,
+            float alpha,
+            long nowTicks,
+            RenderedDetectionState destination)
+        {
+            destination.Rotation = target.Rotation;
+            destination.CompletedAtTicks = nowTicks;
+
+            int idx = 0;
+            for (int faceIndex = 0; faceIndex < destination.Faces.Count; faceIndex++)
+            {
+                var destinationLandmarks = destination.Faces[faceIndex].Landmarks;
+                var previousLandmarks = previous.Result.Faces[faceIndex].Landmarks;
+                var targetLandmarks = target.Result.Faces[faceIndex].Landmarks;
+
+                for (int landmarkIndex = 0; landmarkIndex < destinationLandmarks.Count; landmarkIndex++)
+                {
+                    var prev = previousLandmarks[landmarkIndex];
+                    var next = targetLandmarks[landmarkIndex];
+                    destinationLandmarks[landmarkIndex] = new NormalizedPoint(
+                        _filtersX![idx].Filter(PredictValue(prev.X, next.X, alpha), nowTicks),
+                        _filtersY![idx].Filter(PredictValue(prev.Y, next.Y, alpha), nowTicks));
                     idx++;
                 }
             }
@@ -1706,6 +2038,9 @@ namespace CameraTests.UI
             _rectFrameRecording = SKRect.Empty;
         }
 
+        /// <summary>
+        /// Immutable detector output captured at a specific completion time and orientation.
+        /// </summary>
         public record DetectionSnapshot
         {
             /// <summary>
@@ -1721,10 +2056,19 @@ namespace CameraTests.UI
                 CompletedAtTicks = completedAtTicks;
             }
 
+            /// <summary>
+            /// Gets the raw face-landmark result payload returned by the detector.
+            /// </summary>
             public FaceLandmarkResult Result { get; }
 
+            /// <summary>
+            /// Gets the detector rotation associated with <see cref="Result"/>.
+            /// </summary>
             public int Rotation { get; }
 
+            /// <summary>
+            /// Gets the completion timestamp of the detector callback in <see cref="Stopwatch"/> ticks.
+            /// </summary>
             public long CompletedAtTicks { get; }
         }
 
@@ -1744,13 +2088,31 @@ namespace CameraTests.UI
                 CompletedAtTicks = completedAtTicks;
             }
 
+            /// <summary>
+            /// Gets the mutable face collection currently used by the overlay renderer.
+            /// </summary>
             public List<DetectedFace> Faces { get; }
 
+            /// <summary>
+            /// Gets or sets the detector rotation associated with the rendered state.
+            /// </summary>
             public int Rotation { get; set; }
 
+            /// <summary>
+            /// Gets or sets the timestamp of the source detection state in <see cref="Stopwatch"/> ticks.
+            /// </summary>
             public long CompletedAtTicks { get; set; }
         }
 
+        /// <summary>
+        /// Describes one prepared preview-detection request stored in the coalescing queue.
+        /// </summary>
+        /// <param name="BufferIndex">The staging buffer index holding the converted ML frame.</param>
+        /// <param name="Width">The prepared frame width in pixels.</param>
+        /// <param name="Height">The prepared frame height in pixels.</param>
+        /// <param name="Rotation">The detector rotation associated with the frame.</param>
+        /// <param name="ResizeMilliseconds">The time spent resizing or preparing the ML frame.</param>
+        /// <param name="ReusedCachedFrame">Whether the request reused the cached first ML frame.</param>
         private sealed record PendingDetectionRequest(
             int BufferIndex,
             int Width,
@@ -1835,6 +2197,15 @@ namespace CameraTests.UI
             }
         }
 
+        /// <summary>
+        /// Reports timing, source, and prepared-frame information for a completed preview-detection pass.
+        /// </summary>
+        /// <param name="ResizeMilliseconds">The time spent preparing the detector input frame.</param>
+        /// <param name="DetectionMilliseconds">The detector turnaround time from enqueue to completion.</param>
+        /// <param name="ReusedCachedFrame">Whether the detector reused the cached first ML frame.</param>
+        /// <param name="Width">The prepared detector input width in pixels.</param>
+        /// <param name="Height">The prepared detector input height in pixels.</param>
+        /// <param name="Rotation">The detector rotation associated with the prepared frame.</param>
         public record PreviewDetectionMetrics(
             double ResizeMilliseconds,
             double DetectionMilliseconds,

@@ -79,21 +79,15 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
             if (error is not null)
                 throw new InvalidOperationException($"Detection failed: {error.LocalizedDescription}");
 
-            var faces = new List<DetectedFace>();
-            if (result?.FaceLandmarks is not null)
+            var faceLandmarks = result?.FaceLandmarks;
+            var faces = faceLandmarks is NSArray faceLandmarkArray
+                ? new List<DetectedFace>((int)faceLandmarkArray.Count)
+                : new List<DetectedFace>();
+            if (faceLandmarks is not null)
             {
-                foreach (var landmarkList in result.FaceLandmarks)
+                foreach (var landmarkList in faceLandmarks)
                 {
-                    var points = new List<NormalizedPoint>();
-                    if (landmarkList is NSArray arr)
-                    {
-                        for (nuint i = 0; i < arr.Count; i++)
-                        {
-                            var lm = arr.GetItem<MPPNormalizedLandmark>(i);
-                            points.Add(new NormalizedPoint(lm.X, lm.Y));
-                        }
-                    }
-                    faces.Add(new DetectedFace { Landmarks = points });
+                    faces.Add(MapDetectedFace(landmarkList));
                 }
             }
 
@@ -226,21 +220,15 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
 
     private static FaceLandmarkResult ConvertResult(MPPFaceLandmarkerResult? result, int width, int height)
     {
-        var faces = new List<DetectedFace>();
-        if (result?.FaceLandmarks is not null)
+        var faceLandmarks = result?.FaceLandmarks;
+        var faces = faceLandmarks is NSArray faceLandmarkArray
+            ? new List<DetectedFace>((int)faceLandmarkArray.Count)
+            : new List<DetectedFace>();
+        if (faceLandmarks is not null)
         {
-            foreach (var landmarkList in result.FaceLandmarks)
+            foreach (var landmarkList in faceLandmarks)
             {
-                var points = new List<NormalizedPoint>();
-                if (landmarkList is NSArray arr)
-                {
-                    for (nuint i = 0; i < arr.Count; i++)
-                    {
-                        var lm = arr.GetItem<MPPNormalizedLandmark>(i);
-                        points.Add(new NormalizedPoint(lm.X, lm.Y));
-                    }
-                }
-                faces.Add(new DetectedFace { Landmarks = points });
+                faces.Add(MapDetectedFace(landmarkList));
             }
         }
 
@@ -250,6 +238,21 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
             ImageWidth = width,
             ImageHeight = height,
         };
+    }
+
+    private static DetectedFace MapDetectedFace(NSObject? landmarkList)
+    {
+        if (landmarkList is not NSArray arr)
+            return new DetectedFace { Landmarks = [] };
+
+        var points = new List<NormalizedPoint>((int)arr.Count);
+        for (nuint i = 0; i < arr.Count; i++)
+        {
+            var landmark = arr.GetItem<MPPNormalizedLandmark>(i);
+            points.Add(new NormalizedPoint(landmark.X, landmark.Y));
+        }
+
+        return new DetectedFace { Landmarks = points };
     }
 
     private sealed class PendingDetection

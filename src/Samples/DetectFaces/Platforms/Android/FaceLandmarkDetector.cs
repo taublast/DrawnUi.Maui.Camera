@@ -306,8 +306,10 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
         double inferenceMilliseconds,
         bool usedGpuDelegate)
     {
-        var faces = new List<DetectedFace>();
         var faceLandmarks = result?.FaceLandmarks();
+        var faces = faceLandmarks != null
+            ? new List<DetectedFace>(faceLandmarks.Count)
+            : new List<DetectedFace>();
         try
         {
             if (faceLandmarks is not null)
@@ -318,13 +320,7 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
                 // Dispose each wrapper immediately after extracting the managed float values.
                 foreach (var landmarkList in faceLandmarks)
                 {
-                    var points = new List<NormalizedPoint>(landmarkList.Count);
-                    foreach (var lm in landmarkList)
-                    {
-                        points.Add(new NormalizedPoint(lm.X(), lm.Y()));
-                        (lm as IDisposable)?.Dispose();
-                    }
-                    faces.Add(new DetectedFace { Landmarks = points });
+                    faces.Add(MapDetectedFace(landmarkList));
                     (landmarkList as IDisposable)?.Dispose();
                 }
             }
@@ -343,6 +339,19 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
             InferenceMilliseconds = inferenceMilliseconds,
             UsedGpuDelegate = usedGpuDelegate,
         };
+    }
+
+    private static DetectedFace MapDetectedFace(System.Collections.Generic.IList<global::MediaPipe.Tasks.Components.Containers.NormalizedLandmark> landmarkList)
+    {
+        var points = new List<NormalizedPoint>(landmarkList.Count);
+        for (int landmarkIndex = 0; landmarkIndex < landmarkList.Count; landmarkIndex++)
+        {
+            var lm = landmarkList[landmarkIndex];
+            points.Add(new NormalizedPoint(lm.X(), lm.Y()));
+            (lm as IDisposable)?.Dispose();
+        }
+
+        return new DetectedFace { Landmarks = points };
     }
 
     private sealed class ResultListener : Java.Lang.Object, OutputHandler.IResultListener

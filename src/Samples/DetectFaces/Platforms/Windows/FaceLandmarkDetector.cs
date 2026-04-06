@@ -230,12 +230,7 @@ var timestamp = new Timestamp(1L);
         List<DetectedFace> faces;
         lock (faceLandmarkLists)
         {
-            faces = faceLandmarkLists
-                .Select(list => new DetectedFace
-                {
-                    Landmarks = list.Landmark.Select(lm => new NormalizedPoint(lm.X, lm.Y)).ToList(),
-                })
-                .ToList();
+            faces = MapDetectedFaces(faceLandmarkLists);
         }
 
         return new FaceLandmarkResult
@@ -583,7 +578,7 @@ var timestamp = new Timestamp(1L);
 
             _graph.WaitUntilIdle().AssertOk();
 
-            var faces = new List<DetectedFace>();
+            var faces = new List<DetectedFace>(Math.Max(0, _landmarksPoller.QueueSize()));
             using var landmarkPacket = new NormalizedLandmarkListPacket();
             while (_landmarksPoller.QueueSize() > 0 && _landmarksPoller.Next(landmarkPacket))
             {
@@ -591,10 +586,7 @@ var timestamp = new Timestamp(1L);
                 if (landmarks is null)
                     continue;
 
-                faces.Add(new DetectedFace
-                {
-                    Landmarks = landmarks.Landmark.Select(lm => new NormalizedPoint(lm.X, lm.Y)).ToList(),
-                });
+                faces.Add(MapDetectedFace(landmarks));
             }
 
             return Task.FromResult(new FaceLandmarkResult
@@ -613,5 +605,32 @@ var timestamp = new Timestamp(1L);
             _graph.Dispose();
             _cwdScope.Dispose();
         }
+    }
+
+    private static List<DetectedFace> MapDetectedFaces(List<NormalizedLandmarkList> faceLandmarkLists)
+    {
+        var faces = new List<DetectedFace>(faceLandmarkLists.Count);
+        for (int faceIndex = 0; faceIndex < faceLandmarkLists.Count; faceIndex++)
+        {
+            faces.Add(MapDetectedFace(faceLandmarkLists[faceIndex]));
+        }
+
+        return faces;
+    }
+
+    private static DetectedFace MapDetectedFace(NormalizedLandmarkList landmarks)
+    {
+        var sourceLandmarks = landmarks.Landmark;
+        var points = new List<NormalizedPoint>(sourceLandmarks.Count);
+        for (int landmarkIndex = 0; landmarkIndex < sourceLandmarks.Count; landmarkIndex++)
+        {
+            var landmark = sourceLandmarks[landmarkIndex];
+            points.Add(new NormalizedPoint(landmark.X, landmark.Y));
+        }
+
+        return new DetectedFace
+        {
+            Landmarks = points,
+        };
     }
 }
