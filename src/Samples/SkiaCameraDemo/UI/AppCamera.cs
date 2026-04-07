@@ -286,7 +286,6 @@ namespace CameraTests.Views
                 if (_orientation != value)
                 {
                     _orientation = value;
-                    InvalidateOverlays();
                 }
             }
         }
@@ -389,8 +388,8 @@ namespace CameraTests.Views
                     }
                 }
 
-                if (this.Orientation == DeviceOrientation.LandscapeLeft ||
-                    this.Orientation == DeviceOrientation.LandscapeRight)
+                if (orientation == DeviceOrientation.LandscapeLeft ||
+                    orientation == DeviceOrientation.LandscapeRight)
                 {
                     overlayScale *= 0.8f; //smaller in landscape
                 }

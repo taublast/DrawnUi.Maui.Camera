@@ -80,6 +80,7 @@ public partial class MainPage : BasePageReloadable, IDisposable
     private void OnOrientationChanged(object sender, DeviceOrientation e)
     {
         _orientation = e;
+        CameraControl.Orientation = e;
     }
 
     private void OnRotationChanged(object sender, int rotation)
