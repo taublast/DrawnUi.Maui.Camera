@@ -2020,7 +2020,8 @@ public partial class NativeCamera : Java.Lang.Object, ImageReader.IOnImageAvaila
         }
     }
 
-    private void ApplyPreviewVideoStabilization(CaptureRequest.Builder requestBuilder, CameraCharacteristics characteristics = null)
+    private void ApplyPreviewVideoStabilization(CaptureRequest.Builder requestBuilder, CameraCharacteristics characteristics = null,
+        bool preferRecordingStabilization = false)
     {
         if (requestBuilder == null)
             return;
@@ -2029,23 +2030,79 @@ public partial class NativeCamera : Java.Lang.Object, ImageReader.IOnImageAvaila
 
         try
         {
-            var availableModes = characteristics?.Get(CameraCharacteristics.ControlAvailableVideoStabilizationModes)?.ToArray<int>();
-            var requestedMode = FormsControl.VideoStabilization
-                ? (int)ControlVideoStabilizationMode.On
-                : (int)ControlVideoStabilizationMode.Off;
+            var availableVideoModes = characteristics?.Get(CameraCharacteristics.ControlAvailableVideoStabilizationModes)?.ToArray<int>();
+            var availableOpticalModes = characteristics?.Get(CameraCharacteristics.LensInfoAvailableOpticalStabilization)?.ToArray<int>();
 
-            if (availableModes?.Contains(requestedMode) == true)
+            const int opticalStabilizationOff = 0;
+            const int opticalStabilizationOn = 1;
+            var videoStabilizationOff = (int)ControlVideoStabilizationMode.Off;
+            var videoStabilizationOn = (int)ControlVideoStabilizationMode.On;
+            const int previewStabilization = 2;
+
+            var selectedVideoMode = videoStabilizationOff;
+            var useOpticalPreview = false;
+
+            if (FormsControl.VideoStabilization)
             {
-                requestBuilder.Set(CaptureRequest.ControlVideoStabilizationMode, requestedMode);
-                Debug.WriteLine($"[NativeCameraAndroid] Applied video stabilization mode {(FormsControl.VideoStabilization ? "On" : "Off")}");
+                if (availableOpticalModes?.Contains(opticalStabilizationOn) == true)
+                {
+                    useOpticalPreview = true;
+                }
+                else if (!preferRecordingStabilization && availableVideoModes?.Contains(previewStabilization) == true)
+                {
+                    selectedVideoMode = previewStabilization;
+                }
+                else if (preferRecordingStabilization && availableVideoModes?.Contains(videoStabilizationOn) == true)
+                {
+                    selectedVideoMode = videoStabilizationOn;
+                }
+                else if (availableVideoModes?.Contains(previewStabilization) == true)
+                {
+                    selectedVideoMode = previewStabilization;
+                }
+                else if (availableVideoModes?.Contains(videoStabilizationOn) == true)
+                {
+                    selectedVideoMode = videoStabilizationOn;
+                }
+            }
+
+            requestBuilder.Set(CaptureRequest.ControlVideoStabilizationMode, selectedVideoMode);
+
+            if (availableOpticalModes != null)
+            {
+                var requestedOpticalMode = useOpticalPreview
+                    ? opticalStabilizationOn
+                    : opticalStabilizationOff;
+
+                if (availableOpticalModes.Contains(requestedOpticalMode))
+                {
+                    requestBuilder.Set(CaptureRequest.LensOpticalStabilizationMode, requestedOpticalMode);
+                }
+                else if (availableOpticalModes.Contains(opticalStabilizationOff))
+                {
+                    requestBuilder.Set(CaptureRequest.LensOpticalStabilizationMode, opticalStabilizationOff);
+                }
+            }
+
+            if (!FormsControl.VideoStabilization)
+            {
+                Debug.WriteLine("[NativeCameraAndroid] Stabilization disabled for preview session");
+            }
+            else if (useOpticalPreview)
+            {
+                Debug.WriteLine("[NativeCameraAndroid] Applied optical stabilization mode for preview session");
+            }
+            else if (selectedVideoMode == previewStabilization)
+            {
+                Debug.WriteLine("[NativeCameraAndroid] Applied preview stabilization mode");
+            }
+            else if (selectedVideoMode == videoStabilizationOn)
+            {
+                Debug.WriteLine("[NativeCameraAndroid] Applied recording stabilization mode");
             }
             else
             {
-                requestBuilder.Set(CaptureRequest.ControlVideoStabilizationMode, (int)ControlVideoStabilizationMode.Off);
-                if (FormsControl.VideoStabilization)
-                {
-                    Debug.WriteLine("[NativeCameraAndroid] Video stabilization requested but not supported for this camera/session");
-                }
+                Debug.WriteLine("[NativeCameraAndroid] Stabilization requested but not supported for this camera/session");
             }
         }
         catch (Exception ex)
@@ -2308,7 +2365,7 @@ public partial class NativeCamera : Java.Lang.Object, ImageReader.IOnImageAvaila
 
             // WE ARE RECORDING !!!
             mPreviewRequestBuilder = mCameraDevice.CreateCaptureRequest(CameraTemplate.Record);
-            ApplyPreviewVideoStabilization(mPreviewRequestBuilder);
+            ApplyPreviewVideoStabilization(mPreviewRequestBuilder, preferRecordingStabilization: true);
 
             // Apply flash mode
             if (mFlashSupported)
@@ -3493,7 +3550,7 @@ public partial class NativeCamera : Java.Lang.Object, ImageReader.IOnImageAvaila
 
             // Create capture request for video recording
             mPreviewRequestBuilder = mCameraDevice.CreateCaptureRequest(CameraTemplate.Record);
-            ApplyPreviewVideoStabilization(mPreviewRequestBuilder);
+            ApplyPreviewVideoStabilization(mPreviewRequestBuilder, preferRecordingStabilization: true);
 
             mPreviewRequestBuilder.AddTarget(previewSurface);
             mPreviewRequestBuilder.AddTarget(recorderSurface);

@@ -802,6 +802,27 @@ namespace CameraTests.Views
                                     }
                                 })
                                 .OnTapped(async me => { await SelectCamera(); }),
+
+
+                            new SettingsButton("🎥", "Stabilization: OFF")
+                                {
+                                    TintColor = Color.FromArgb("#6B7280"),
+                                }
+                                .OnTapped(me =>
+                                {
+                                    CameraControl.VideoStabilization = !CameraControl.VideoStabilization;
+                                })
+                                .ObserveProperty(CameraControl, nameof(CameraControl.VideoStabilization),
+                                    me =>
+                                    {
+                                        me.Text = CameraControl.VideoStabilization
+                                            ? "Stabilization: ON"
+                                            : "Stabilization: OFF";
+                                        me.TintColor = CameraControl.VideoStabilization
+                                            ? Color.FromArgb("#10B981")
+                                            : Color.FromArgb("#6B7280");
+                                    }),
+
                             new SettingsButton("🎤", "Audio Device") { TintColor = Color.FromArgb("#B45309"), }
                                 .ObserveProperty(CameraControl, nameof(CameraControl.AudioDeviceIndex), async (me) =>
                                 {
@@ -927,6 +948,8 @@ namespace CameraTests.Views
                                     })
                                 .ObserveProperty(CameraControl, nameof(CameraControl.CaptureMode),
                                     me => { me.IsVisible = CameraControl.CaptureMode == CaptureModeType.Video; }),
+
+
                             new SettingsButton("❌", "Abort")
                                 {
                                     TintColor = Color.FromArgb("#E11D48"), IsVisible = false
