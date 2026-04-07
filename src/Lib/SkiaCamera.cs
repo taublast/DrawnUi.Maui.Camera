@@ -2279,6 +2279,7 @@ public partial class SkiaCamera : SkiaControl
             RescalingQuality = SKFilterQuality.None, //reduce power consumption
 #endif
             CacheRescaledSource = false,
+            UseCache = SkiaCacheType.GPU,
             HorizontalOptions = LayoutOptions.Fill,
             VerticalOptions = LayoutOptions.Fill,
             Aspect = this.Aspect,

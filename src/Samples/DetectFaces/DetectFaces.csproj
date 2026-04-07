@@ -36,6 +36,8 @@
 		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">24.0</SupportedOSPlatformVersion>
 		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</SupportedOSPlatformVersion>
 		<TargetPlatformMinVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</TargetPlatformMinVersion>
+		<MediaPipeTasksVisionAndroidPackageVersion>0.10.33-preview.4</MediaPipeTasksVisionAndroidPackageVersion>
+		<MediaPipeTasksVisionIosPackageVersion>0.10.21</MediaPipeTasksVisionIosPackageVersion>
 	</PropertyGroup>
 
 	<!-- Prevent Android from compressing .task files so MediaPipe can read them directly -->
@@ -86,11 +88,11 @@
 
 	<!-- MediaPipe Face Landmark Detection - platform-specific packages -->
 	<ItemGroup Condition="$(TargetFramework.Contains('android'))">
-		<PackageReference Include="MediaPipeTasksVision.Android" Version="0.10.33" />
+		<PackageReference Include="MediaPipeTasksVision.Android" Version="$(MediaPipeTasksVisionAndroidPackageVersion)" />
 	</ItemGroup>
 
 	<ItemGroup Condition="$(TargetFramework.Contains('-ios'))">
-		<PackageReference Include="MediaPipeTasksVision.iOS" Version="0.10.21" />
+		<PackageReference Include="MediaPipeTasksVision.iOS" Version="$(MediaPipeTasksVisionIosPackageVersion)" />
 	</ItemGroup>
 
 	<ItemGroup Condition="$(TargetFramework.Contains('windows'))">

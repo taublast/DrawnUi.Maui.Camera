@@ -3,6 +3,9 @@ namespace TestFaces.Services;
 public interface IFaceLandmarkDetector
 {
     int MaxFaces { get; set; }
+    float MinFaceDetectionConfidence { get; set; }
+    float MinFacePresenceConfidence { get; set; }
+    float MinTrackingConfidence { get; set; }
 
     event EventHandler<PreviewDetectionCompletedEventArgs>? PreviewDetectionCompleted;
     event EventHandler<PreviewDetectionFailedEventArgs>? PreviewDetectionFailed;
@@ -11,20 +14,13 @@ public interface IFaceLandmarkDetector
     void EnqueuePreviewDetection(byte[] rgbaBytes, PreviewDetectionRequest request);
 }
 
-public enum PreviewLandmarkDetail
-{
-    Full,
-    Lite,
-}
-
 public sealed record PreviewDetectionRequest(
     int Width,
     int Height,
     int Rotation,
     double ResizeMilliseconds,
     bool ReusedCachedFrame,
-    long EnqueuedAtTicks,
-    PreviewLandmarkDetail LandmarkDetail = PreviewLandmarkDetail.Full);
+    long EnqueuedAtTicks);
 
 public sealed class PreviewDetectionCompletedEventArgs : EventArgs
 {

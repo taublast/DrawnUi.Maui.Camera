@@ -5,6 +5,9 @@ namespace TestFaces.Platforms.MacCatalyst;
 public class FaceLandmarkDetector : IFaceLandmarkDetector
 {
     public int MaxFaces { get; set; } = 2;
+    public float MinFaceDetectionConfidence { get; set; } = 0.5f;
+    public float MinFacePresenceConfidence { get; set; } = 0.5f;
+    public float MinTrackingConfidence { get; set; } = 0.5f;
 
     public event EventHandler<PreviewDetectionCompletedEventArgs>? PreviewDetectionCompleted;
 

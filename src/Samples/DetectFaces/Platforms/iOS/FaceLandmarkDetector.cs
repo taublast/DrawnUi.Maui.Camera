@@ -8,11 +8,18 @@ namespace TestFaces.Platforms.iOS;
 
 public class FaceLandmarkDetector : IFaceLandmarkDetector
 {
+    private const float DefaultMinFaceDetectionConfidence = 0.5f;
+    private const float DefaultMinFacePresenceConfidence = 0.5f;
+    private const float DefaultMinTrackingConfidence = 0.5f;
+
     private MPPFaceLandmarker? _landmarker;
     private readonly object _pendingSync = new();
     private readonly LiveStreamDelegate _liveStreamDelegate;
     private long _videoTimestampMs;
     private int _maxFaces = 2;
+    private float _minFaceDetectionConfidence = DefaultMinFaceDetectionConfidence;
+    private float _minFacePresenceConfidence = DefaultMinFacePresenceConfidence;
+    private float _minTrackingConfidence = DefaultMinTrackingConfidence;
     private PendingDetection? _pendingDetection;
 
     public event EventHandler<PreviewDetectionCompletedEventArgs>? PreviewDetectionCompleted;
@@ -38,6 +45,48 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
         }
     }
 
+    public float MinFaceDetectionConfidence
+    {
+        get => _minFaceDetectionConfidence;
+        set
+        {
+            var normalized = ClampConfidence(value);
+            if (_minFaceDetectionConfidence == normalized)
+                return;
+
+            _minFaceDetectionConfidence = normalized;
+            _landmarker = null;
+        }
+    }
+
+    public float MinFacePresenceConfidence
+    {
+        get => _minFacePresenceConfidence;
+        set
+        {
+            var normalized = ClampConfidence(value);
+            if (_minFacePresenceConfidence == normalized)
+                return;
+
+            _minFacePresenceConfidence = normalized;
+            _landmarker = null;
+        }
+    }
+
+    public float MinTrackingConfidence
+    {
+        get => _minTrackingConfidence;
+        set
+        {
+            var normalized = ClampConfidence(value);
+            if (_minTrackingConfidence == normalized)
+                return;
+
+            _minTrackingConfidence = normalized;
+            _landmarker = null;
+        }
+    }
+
     private MPPFaceLandmarker GetLandmarker()
     {
         if (_landmarker is not null)
@@ -52,6 +101,9 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
         var options = new MPPFaceLandmarkerOptions();
         options.BaseOptions = baseOptions;
         options.NumFaces = _maxFaces;
+        options.MinFaceDetectionConfidence = _minFaceDetectionConfidence;
+        options.MinFacePresenceConfidence = _minFacePresenceConfidence;
+        options.MinTrackingConfidence = _minTrackingConfidence;
         options.RunningMode = MPPRunningMode.LiveStream;
         options.FaceLandmarkerLiveStreamDelegate = _liveStreamDelegate;
 
@@ -60,6 +112,11 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
             throw new InvalidOperationException($"Failed to create FaceLandmarker: {error.LocalizedDescription}");
 
         return _landmarker;
+    }
+
+    private static float ClampConfidence(float value)
+    {
+        return Math.Clamp(value, 0f, 1f);
     }
 
     public Task<FaceLandmarkResult> DetectAsync(Stream imageStream)

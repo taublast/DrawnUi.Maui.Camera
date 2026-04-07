@@ -77,6 +77,7 @@ public partial class MainPage : ContentPage
     {
         CameraControl.Detector = _detector;
         _detector.MaxFaces = CameraControl.MaxNumFaces;
+        SyncConfidenceInputsFromCamera();
         AttachHardware(true);
         OnModeChanged(null, EventArgs.Empty);
     }
@@ -102,6 +103,54 @@ public partial class MainPage : ContentPage
 
 
     #region DETECT FACE LANDMARKS
+
+    private void SyncConfidenceInputsFromCamera()
+    {
+        // Keep the manual input fields in sync with the camera's current detector thresholds.
+        DetectionConfidenceEntry.Text = CameraControl.MinFaceDetectionConfidence.ToString("0.00");
+        PresenceConfidenceEntry.Text = CameraControl.MinFacePresenceConfidence.ToString("0.00");
+        TrackingConfidenceEntry.Text = CameraControl.MinTrackingConfidence.ToString("0.00");
+    }
+
+    private void OnApplyConfidenceClicked(object? sender, EventArgs e)
+    {
+        try
+        {
+            // These inputs intentionally accept raw text so thresholds can be tuned manually while the sample is running.
+            var detectionConfidence = ParseConfidenceOrThrow(DetectionConfidenceEntry.Text, nameof(DetectionConfidenceEntry));
+            var presenceConfidence = ParseConfidenceOrThrow(PresenceConfidenceEntry.Text, nameof(PresenceConfidenceEntry));
+            var trackingConfidence = ParseConfidenceOrThrow(TrackingConfidenceEntry.Text, nameof(TrackingConfidenceEntry));
+
+            CameraControl.MinFaceDetectionConfidence = detectionConfidence;
+            CameraControl.MinFacePresenceConfidence = presenceConfidence;
+            CameraControl.MinTrackingConfidence = trackingConfidence;
+
+            // Re-apply settings immediately so the detector instance can rebuild with the new thresholds if needed.
+            CameraControl.Detector = _detector;
+            SyncConfidenceInputsFromCamera();
+            StatusLabel.Text = $"Confidence updated det {detectionConfidence:0.00}, pres {presenceConfidence:0.00}, track {trackingConfidence:0.00}";
+        }
+        catch (Exception ex)
+        {
+            StatusLabel.Text = ex.Message;
+        }
+    }
+
+    private static float ParseConfidenceOrThrow(string? rawValue, string inputName)
+    {
+        if (!float.TryParse(rawValue, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var value) &&
+            !float.TryParse(rawValue, out value))
+        {
+            throw new InvalidOperationException($"{inputName} must be a number between 0 and 1.");
+        }
+
+        if (value < 0f || value > 1f)
+        {
+            throw new InvalidOperationException($"{inputName} must be in the range 0..1.");
+        }
+
+        return value;
+    }
 
     private async void OnModeChanged(object? sender, EventArgs e)
     {

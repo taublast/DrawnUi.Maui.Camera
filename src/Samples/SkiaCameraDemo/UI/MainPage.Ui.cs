@@ -58,7 +58,7 @@ namespace CameraTests.Views
                                     HorizontalOptions = LayoutOptions.Fill,
                                     VerticalOptions = LayoutOptions.Fill,
                                     BackgroundColor = Colors.Black,
-                                    Aspect = TransformAspect.AspectFit
+                                    Aspect = TransformAspect.AspectFit,
                                 }
                                 .Assign(out CameraControl)
                                 .ObserveSelf((me, prop) =>

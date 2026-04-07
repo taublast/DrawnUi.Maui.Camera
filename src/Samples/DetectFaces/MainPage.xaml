@@ -10,7 +10,7 @@
         VerticalOptions="Fill" HorizontalOptions="Fill"
         Padding="16"
         BackgroundColor="Grey"
-        RowDefinitions="64,*"
+        RowDefinitions="Auto,Auto,*"
         RowSpacing="12">
 
         <!--  Top bar: button + spinner + status  -->
@@ -38,8 +38,50 @@
 
         </HorizontalStackLayout>
 
+        <!-- Manual confidence tuning for the detector. Values are normalized 0..1 thresholds. -->
+        <Grid
+            Grid.Row="1"
+            ColumnDefinitions="Auto,72,Auto,72,Auto,72,Auto"
+            ColumnSpacing="8"
+            RowDefinitions="Auto"
+            VerticalOptions="Center">
+
+            <Label Grid.Column="0" Text="Det" VerticalTextAlignment="Center" />
+            <Entry
+                x:Name="DetectionConfidenceEntry"
+                Grid.Column="1"
+                HorizontalTextAlignment="Center"
+                Keyboard="Numeric"
+                Placeholder="0..1"
+                Text="0.50" />
+
+            <Label Grid.Column="2" Text="Pres" VerticalTextAlignment="Center" />
+            <Entry
+                x:Name="PresenceConfidenceEntry"
+                Grid.Column="3"
+                HorizontalTextAlignment="Center"
+                Keyboard="Numeric"
+                Placeholder="0..1"
+                Text="0.50" />
+
+            <Label Grid.Column="4" Text="Track" VerticalTextAlignment="Center" />
+            <Entry
+                x:Name="TrackingConfidenceEntry"
+                Grid.Column="5"
+                HorizontalTextAlignment="Center"
+                Keyboard="Numeric"
+                Placeholder="0..1"
+                Text="0.50" />
+
+            <Button
+                x:Name="ApplyConfidenceButton"
+                Grid.Column="6"
+                Clicked="OnApplyConfidenceClicked"
+                Text="Apply" />
+        </Grid>
+
         <!--  Camera preview or selected image  -->
-        <Grid Grid.Row="1" VerticalOptions="Fill" HorizontalOptions="Fill">
+        <Grid Grid.Row="2" VerticalOptions="Fill" HorizontalOptions="Fill">
 
             <ui:AppCanvas
                 x:Name="MainCanvas"

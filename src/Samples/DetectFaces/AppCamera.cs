@@ -39,6 +39,21 @@ namespace CameraTests.UI
         private const int DefaultTrackedMultiFaceMlMaxDimension = 112;
 
         /// <summary>
+        /// Default minimum confidence threshold for the face-detection stage.
+        /// </summary>
+        private const float DefaultMinFaceDetectionConfidence = 0.5f;
+
+        /// <summary>
+        /// Default minimum confidence threshold for the face-presence stage.
+        /// </summary>
+        private const float DefaultMinFacePresenceConfidence = 0.5f;
+
+        /// <summary>
+        /// Default minimum confidence threshold for landmark tracking.
+        /// </summary>
+        private const float DefaultMinTrackingConfidence = 0.5f;
+
+        /// <summary>
         /// Time constant for overlay interpolation toward the latest detected landmarks.
         /// Higher values make masks smoother but laggier; lower values make them more responsive but twitchier.
         /// Values around 10-16 ms remove most visible landmark buzz while keeping the mask responsive.
@@ -165,6 +180,24 @@ namespace CameraTests.UI
         public int TrackedMultiFaceMlMaxDimension { get; set; } = DefaultTrackedMultiFaceMlMaxDimension;
 
         /// <summary>
+        /// Gets or sets the minimum score required for the initial face-detection stage.
+        /// Higher values reduce weak detections, lower values admit more tentative detections.
+        /// </summary>
+        public float MinFaceDetectionConfidence { get; set; } = DefaultMinFaceDetectionConfidence;
+
+        /// <summary>
+        /// Gets or sets the minimum score required for the face-presence stage after detection.
+        /// Higher values demand more certainty that a tracked region still contains a face.
+        /// </summary>
+        public float MinFacePresenceConfidence { get; set; } = DefaultMinFacePresenceConfidence;
+
+        /// <summary>
+        /// Gets or sets the minimum score required for the tracker to keep following an existing face.
+        /// Higher values make tracking stricter, lower values make reacquisition easier but noisier.
+        /// </summary>
+        public float MinTrackingConfidence { get; set; } = DefaultMinTrackingConfidence;
+
+        /// <summary>
         /// Gets or sets the time constant used when interpolating overlay landmarks toward the latest
         /// detection.
         /// </summary>
@@ -207,7 +240,18 @@ namespace CameraTests.UI
             if (_detector != null)
             {
                 _detector.MaxFaces = _maxNumFaces;
+                _detector.MinFaceDetectionConfidence = ClampConfidence(MinFaceDetectionConfidence);
+                _detector.MinFacePresenceConfidence = ClampConfidence(MinFacePresenceConfidence);
+                _detector.MinTrackingConfidence = ClampConfidence(MinTrackingConfidence);
             }
+        }
+
+        /// <summary>
+        /// Normalizes user-entered confidence values into MediaPipe's supported <c>0..1</c> range.
+        /// </summary>
+        private static float ClampConfidence(float value)
+        {
+            return Math.Clamp(value, 0f, 1f);
         }
 
         /// <summary>
@@ -222,8 +266,9 @@ namespace CameraTests.UI
 
             if (config == null || string.IsNullOrWhiteSpace(config.Filename))
             {
-                MaskBitmap?.Dispose();
+                var kill = MaskBitmap;
                 MaskBitmap = null;
+                DisposeObject(kill);
                 return;
             }
 
@@ -232,8 +277,9 @@ namespace CameraTests.UI
             await stream.CopyToAsync(managed);
             managed.Position = 0;
 
-            MaskBitmap?.Dispose();
+            var kill2 = MaskBitmap;
             MaskBitmap = SKBitmap.Decode(managed);
+            DisposeObject(kill2);
         }
 
 
@@ -450,8 +496,7 @@ namespace CameraTests.UI
                         request.Rotation,
                         request.ResizeMilliseconds,
                         request.ReusedCachedFrame,
-                        Stopwatch.GetTimestamp(),
-                        GetPreviewLandmarkDetail()));
+                        Stopwatch.GetTimestamp()));
             }
             catch (Exception ex)
             {
@@ -461,19 +506,6 @@ namespace CameraTests.UI
                     PreviewDetectionFailed?.Invoke(this, ex);
                 });
             }
-        }
-
-        /// <summary>
-        /// Chooses how much landmark detail preview detection should materialize for the current draw mode.
-        /// Full landmark meshes are expensive to marshal on Android, so landmark-dot preview uses a lighter
-        /// subset while rectangle and mask modes keep the full mesh they depend on.
-        /// </summary>
-        /// <returns>The preview landmark detail level requested from the detector.</returns>
-        private PreviewLandmarkDetail GetPreviewLandmarkDetail()
-        {
-            return DrawMode == DetectionType.Landmark
-                ? PreviewLandmarkDetail.Lite
-                : PreviewLandmarkDetail.Full;
         }
 
         /// <summary>

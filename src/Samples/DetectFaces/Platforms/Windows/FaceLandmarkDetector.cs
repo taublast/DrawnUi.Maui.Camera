@@ -23,6 +23,9 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
     private readonly SemaphoreSlim _liveSessionLock = new(1, 1);
     private LiveGraphSession? _liveSession;
     private int _maxFaces = 2;
+    private float _minFaceDetectionConfidence = 0.5f;
+    private float _minFacePresenceConfidence = 0.5f;
+    private float _minTrackingConfidence = 0.5f;
 
     public event EventHandler<PreviewDetectionCompletedEventArgs>? PreviewDetectionCompleted;
 
@@ -40,6 +43,24 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
             _maxFaces = normalized;
             _liveSession = null;
         }
+    }
+
+    public float MinFaceDetectionConfidence
+    {
+        get => _minFaceDetectionConfidence;
+        set => _minFaceDetectionConfidence = Math.Clamp(value, 0f, 1f);
+    }
+
+    public float MinFacePresenceConfidence
+    {
+        get => _minFacePresenceConfidence;
+        set => _minFacePresenceConfidence = Math.Clamp(value, 0f, 1f);
+    }
+
+    public float MinTrackingConfidence
+    {
+        get => _minTrackingConfidence;
+        set => _minTrackingConfidence = Math.Clamp(value, 0f, 1f);
     }
 
     public async Task<FaceLandmarkResult> DetectAsync(Stream imageStream)

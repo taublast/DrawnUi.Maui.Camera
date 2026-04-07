@@ -14,7 +14,9 @@ namespace TestFaces.Platforms.Droid;
 /// </summary>
 public class FaceLandmarkDetector : IFaceLandmarkDetector
 {
-    private const int LitePreviewLandmarkStride = 6;
+    private const float DefaultMinFaceDetectionConfidence = 0.5f;
+    private const float DefaultMinFacePresenceConfidence = 0.5f;
+    private const float DefaultMinTrackingConfidence = 0.5f;
 
     private FaceLandmarker? _landmarker;
     private readonly object _landmarkerSync = new();
@@ -24,6 +26,9 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
     private bool _usingGpuDelegate;
     private long _videoTimestampMs;
     private int _maxFaces = 2;
+    private float _minFaceDetectionConfidence = DefaultMinFaceDetectionConfidence;
+    private float _minFacePresenceConfidence = DefaultMinFacePresenceConfidence;
+    private float _minTrackingConfidence = DefaultMinTrackingConfidence;
     private Bitmap? _liveBitmap;
     private int[]? _livePixels;
     private int _liveWidth;
@@ -44,6 +49,48 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
                 return;
 
             _maxFaces = normalized;
+            ResetLandmarker();
+        }
+    }
+
+    public float MinFaceDetectionConfidence
+    {
+        get => _minFaceDetectionConfidence;
+        set
+        {
+            var normalized = ClampConfidence(value);
+            if (_minFaceDetectionConfidence == normalized)
+                return;
+
+            _minFaceDetectionConfidence = normalized;
+            ResetLandmarker();
+        }
+    }
+
+    public float MinFacePresenceConfidence
+    {
+        get => _minFacePresenceConfidence;
+        set
+        {
+            var normalized = ClampConfidence(value);
+            if (_minFacePresenceConfidence == normalized)
+                return;
+
+            _minFacePresenceConfidence = normalized;
+            ResetLandmarker();
+        }
+    }
+
+    public float MinTrackingConfidence
+    {
+        get => _minTrackingConfidence;
+        set
+        {
+            var normalized = ClampConfidence(value);
+            if (_minTrackingConfidence == normalized)
+                return;
+
+            _minTrackingConfidence = normalized;
             ResetLandmarker();
         }
     }
@@ -93,6 +140,10 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
         var options = FaceLandmarker.FaceLandmarkerOptions.InvokeBuilder()
             .SetBaseOptions(baseOptions)
             .SetNumFaces(new Java.Lang.Integer(_maxFaces))
+            // These thresholds are intentionally exposed by the sample so confidence tuning can be tested live.
+            .SetMinFaceDetectionConfidence(new Java.Lang.Float(_minFaceDetectionConfidence))
+            .SetMinFacePresenceConfidence(new Java.Lang.Float(_minFacePresenceConfidence))
+            .SetMinTrackingConfidence(new Java.Lang.Float(_minTrackingConfidence))
             .SetRunningMode(RunningMode.LiveStream)
             .SetResultListener(_resultListener)
             .SetErrorListener(_errorListener)
@@ -188,6 +239,11 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
         }
     }
 
+    private static float ClampConfidence(float value)
+    {
+        return Math.Clamp(value, 0f, 1f);
+    }
+
     private void BeginPendingTaskDetection(TaskCompletionSource<FaceLandmarkResult> completion, int width, int height, double conversionMilliseconds)
     {
         lock (_pendingSync)
@@ -223,7 +279,6 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
             pendingDetection.Height,
             pendingDetection.ConversionMilliseconds,
             Stopwatch.GetElapsedTime(pendingDetection.InferenceStartTicks).TotalMilliseconds,
-            pendingDetection.Request?.LandmarkDetail ?? PreviewLandmarkDetail.Full,
             _usingGpuDelegate);
 
         if (pendingDetection.Completion != null)
@@ -278,10 +333,11 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
     {
         if (_liveBitmap == null || _liveWidth != width || _liveHeight != height)
         {
-            _liveBitmap?.Dispose();
+            var kill = _liveBitmap;
             _liveBitmap = Bitmap.CreateBitmap(width, height, Bitmap.Config.Argb8888);
             _liveWidth = width;
             _liveHeight = height;
+            kill?.Dispose();
         }
 
         return _liveBitmap;
@@ -304,33 +360,29 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
         int height,
         double conversionMilliseconds,
         double inferenceMilliseconds,
-        PreviewLandmarkDetail landmarkDetail,
         bool usedGpuDelegate)
     {
-        var faceLandmarks = result?.FaceLandmarks();
-        var faces = faceLandmarks != null
-            ? new List<DetectedFace>(faceLandmarks.Count)
-            : new List<DetectedFace>();
         var mappingStopwatch = Stopwatch.StartNew();
-        try
+        var faceLandmarks = result?.FaceLandmarksXY();
+        // For richer metadata at a higher mapping cost, switch back to the detailed API:
+        // var detailedFaceLandmarks = result?.FaceLandmarksDetailed();
+        var faces = faceLandmarks != null
+            ? new List<DetectedFace>(faceLandmarks.Length)
+            : new List<DetectedFace>();
+        if (faceLandmarks is not null)
         {
-            if (faceLandmarks is not null)
+            for (int faceIndex = 0; faceIndex < faceLandmarks.Length; faceIndex++)
             {
-                // Each element returned by FaceLandmarks() / the landmark enumerator is a
-                // Xamarin.Android JNI wrapper holding a GREF. At 12+ fps these accumulate
-                // faster than the cross-GC finalizer sweep clears them, causing JVM OOM.
-                // Dispose each wrapper immediately after extracting the managed float values.
-                foreach (var landmarkList in faceLandmarks)
-                {
-                    faces.Add(MapDetectedFace(landmarkList, landmarkDetail));
-                    (landmarkList as IDisposable)?.Dispose();
-                }
+                faces.Add(MapDetectedFace(faceLandmarks[faceIndex], 2));
             }
         }
-        finally
-        {
-            (faceLandmarks as IDisposable)?.Dispose();
-        }
+        // if (detailedFaceLandmarks is not null)
+        // {
+        //     for (int faceIndex = 0; faceIndex < detailedFaceLandmarks.Length; faceIndex++)
+        //     {
+        //         faces.Add(MapDetectedFace(detailedFaceLandmarks[faceIndex].XYZCoordinates, 3));
+        //     }
+        // }
         mappingStopwatch.Stop();
 
         return new FaceLandmarkResult
@@ -345,52 +397,16 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
         };
     }
 
-    private static DetectedFace MapDetectedFace(
-        System.Collections.Generic.IList<global::MediaPipe.Tasks.Components.Containers.NormalizedLandmark> landmarkList,
-        PreviewLandmarkDetail landmarkDetail)
+    private static DetectedFace MapDetectedFace(float[] coordinates, int stride)
     {
-        if (landmarkDetail == PreviewLandmarkDetail.Lite)
+        int landmarkCount = coordinates.Length / stride;
+        var points = new List<NormalizedPoint>(landmarkCount);
+        for (int landmarkIndex = 0; landmarkIndex < landmarkCount; landmarkIndex++)
         {
-            return MapLiteDetectedFace(landmarkList);
-        }
-
-        var points = new List<NormalizedPoint>(landmarkList.Count);
-        for (int landmarkIndex = 0; landmarkIndex < landmarkList.Count; landmarkIndex++)
-        {
-            var landmark = landmarkList[landmarkIndex];
-            points.Add(new NormalizedPoint(landmark.X(), landmark.Y()));
-            (landmark as IDisposable)?.Dispose();
-        }
-
-        return new DetectedFace { Landmarks = points };
-    }
-
-    private static DetectedFace MapLiteDetectedFace(System.Collections.Generic.IList<global::MediaPipe.Tasks.Components.Containers.NormalizedLandmark> landmarkList)
-    {
-        int sourceCount = landmarkList.Count;
-        if (sourceCount == 0)
-            return new DetectedFace { Landmarks = [] };
-
-        int sampledCount = ((sourceCount - 1) / LitePreviewLandmarkStride) + 1;
-        bool includeLast = (sourceCount - 1) % LitePreviewLandmarkStride != 0;
-        if (includeLast)
-        {
-            sampledCount++;
-        }
-
-        var points = new List<NormalizedPoint>(sampledCount);
-        for (int landmarkIndex = 0; landmarkIndex < sourceCount; landmarkIndex += LitePreviewLandmarkStride)
-        {
-            var landmark = landmarkList[landmarkIndex];
-            points.Add(new NormalizedPoint(landmark.X(), landmark.Y()));
-            (landmark as IDisposable)?.Dispose();
-        }
-
-        if (includeLast)
-        {
-            var lastLandmark = landmarkList[sourceCount - 1];
-            points.Add(new NormalizedPoint(lastLandmark.X(), lastLandmark.Y()));
-            (lastLandmark as IDisposable)?.Dispose();
+            int coordinateIndex = landmarkIndex * stride;
+            points.Add(new NormalizedPoint(
+                coordinates[coordinateIndex],
+                coordinates[coordinateIndex + 1]));
         }
 
         return new DetectedFace { Landmarks = points };
