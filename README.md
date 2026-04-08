@@ -19,9 +19,17 @@ Use as Camera or a standalone Audio recorder inside any MAUI app by wrapping wit
 - GPS injection and custom EXIF for both photos and videos
 - Built-in permission handling
 
+---
+
+
+![vlc_0Y0bMKzuHM](https://github.com/user-attachments/assets/21ced7c4-7a05-44bc-ad39-9cfb44c3a4b4)
+
+
+
 ## Sample Apps
 
-- [SkiaCamera Demo](https://github.com/taublast/DrawnUi.Maui.Camera/tree/main/src/Samples/SkiaCameraDemo) - This repo: recording with processing, shaders, AI captions.
+
+- [SkiaCamera Demo](https://github.com/taublast/DrawnUi.Maui.Camera/tree/main/src/Sample) - This repo: recording with processing, shaders, AI captions.
 - [Filters Camera](https://github.com/taublast/ShadersCamera) - Still photo-camera with realtime SKSL shaders as photo-filters.
 - [SolTempo](https://github.com/taublast/SolTempo) - Audio visualizer and BPM detector using SkiaCamera's audio monitoring capabilities.
 
