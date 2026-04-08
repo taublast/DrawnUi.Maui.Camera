@@ -19,7 +19,7 @@ namespace CameraTests.Services
         /// <summary>
         /// Silence length in milliseconds considered as "stopped talking, can start detecting"
         /// </summary>
-        private const int SILENCE_THRESHOLD_MS = 250;
+        private const int SILENCE_THRESHOLD_MS = 350;
 
         /// <summary>
         /// Can limit language to this, left blank for auto-detect.
