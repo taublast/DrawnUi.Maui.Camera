@@ -17,9 +17,9 @@ namespace CameraTests.Views
 
 
         private SkiaShape[] _tabPills;
-        private static Color ColorPanel = Color.FromArgb("#F3101825"); //AA101825
-        private static Color ColorDrawer = Color.FromArgb("#66D9F6FF"); //AA101825
-
+        
+        private static Color ColorPanel = Color.FromArgb("#F6101825"); 
+        
         private Canvas CreateCanvas()
         {
             bool isSimulator = false;
@@ -92,7 +92,6 @@ namespace CameraTests.Views
                                     // Settings Drawer (slides up from bottom)
                                     new SkiaDrawer()
                                         {
-                                            Margin = new Thickness(2, 0, 2, 0),
                                             HeaderSize = 40,
                                             Direction = DrawerDirection.FromBottom,
                                             VerticalOptions = LayoutOptions.End,
@@ -108,7 +107,7 @@ namespace CameraTests.Views
                                                 CornerRadius = new CornerRadius(26, 26, 0, 0),
                                                 HorizontalOptions = LayoutOptions.Fill,
                                                 VerticalOptions = LayoutOptions.Fill,
-                                                BackgroundColor = ColorPanel, // Color.FromArgb("#FE0A101A"),
+                                                BackgroundColor = ColorPanel,  
                                                 StrokeWidth = 1,
                                                 StrokeColor = Color.FromArgb("#3311C5BF"),
                                                 Children =
@@ -130,9 +129,9 @@ namespace CameraTests.Views
                                 }
                             },
 
-#if DEBUG
                             new SkiaLabelFps()
                             {
+                                IsVisible = MauiProgram.ShowDebug,
                                 Margin = new(0, 0, 4, 24),
                                 VerticalOptions = LayoutOptions.End,
                                 HorizontalOptions = LayoutOptions.End,
@@ -142,7 +141,7 @@ namespace CameraTests.Views
                                 ZIndex = 110,
                                 UseCache = SkiaCacheType.GPU
                             }
-#endif
+ 
                         }
                     }
             };
@@ -765,9 +764,10 @@ namespace CameraTests.Views
                         {
                             //CreateDrawerSectionTitle("Capture", "Core camera and input setup"),
 
-                            new SettingsButton("🎦", "Camera: ON")
+                            new SettingsButton(IconFont.Camera, "Camera: ON")
                                 {
                                     TintColor = Color.FromArgb("#10B981"),
+                                    IconColor = Color.FromArgb("#34D399"),
                                 }
                                 .OnTapped(me => { CameraControl.IsOn = !CameraControl.IsOn; })
                                 .ObserveProperty(CameraControl, nameof(CameraControl.IsOn), me =>
@@ -778,11 +778,11 @@ namespace CameraTests.Views
                                         : Color.FromArgb("#6B7280");
                                 }),
 
-                            new SettingsButton("📸", "Mode") { TintColor = Color.FromArgb("#0891B2"), }
+                            new SettingsButton(IconFont.CameraIris, "Mode") { TintColor = Color.FromArgb("#0891B2"), IconColor = Color.FromArgb("#38BDF8"), }
                                 .OnTapped(me => { ToggleCaptureMode(); })
                                 .ObserveProperty(CameraControl, nameof(CameraControl.CaptureMode), me =>
                                 {
-                                    me.AccessoryIcon = CameraControl.CaptureMode == CaptureModeType.Still ? "📸" : "🎥";
+                                    me.AccessoryIcon = CameraControl.CaptureMode == CaptureModeType.Still ? IconFont.CameraIris : IconFont.Video;
                                     me.Text = CameraControl.CaptureMode == CaptureModeType.Still
                                         ? "Mode: Photo"
                                         : "Mode: Video";
@@ -790,7 +790,7 @@ namespace CameraTests.Views
                                         ? Color.FromArgb("#0891B2")
                                         : Color.FromArgb("#7C3AED");
                                 }),
-                            new SettingsButton("📷", "Source") { TintColor = Color.FromArgb("#D97706"), }
+                            new SettingsButton(IconFont.CameraSwitch, "Source") { TintColor = Color.FromArgb("#D97706"), IconColor = Color.FromArgb("#FB923C"), }
                                 .ObserveProperty(CameraControl, nameof(CameraControl.CameraIndex), async (me) =>
                                 {
                                     try
@@ -821,9 +821,10 @@ namespace CameraTests.Views
                                 .OnTapped(async me => { await SelectCamera(); }),
 
 
-                            new SettingsButton("🎥", "Stabilization: OFF")
+                            new SettingsButton(IconFont.Vibrate, "Stabilization: OFF")
                                 {
                                     TintColor = Color.FromArgb("#6B7280"),
+                                    IconColor = Color.FromArgb("#2DD4BF"),
                                 }
                                 .OnTapped(me =>
                                 {
@@ -840,7 +841,7 @@ namespace CameraTests.Views
                                             : Color.FromArgb("#6B7280");
                                     }),
 
-                            new SettingsButton("🎤", "Audio Device") { TintColor = Color.FromArgb("#B45309"), }
+                            new SettingsButton(IconFont.Microphone, "Audio Device") { TintColor = Color.FromArgb("#B45309"), IconColor = Color.FromArgb("#FB7185"), }
                                 .ObserveProperty(CameraControl, nameof(CameraControl.AudioDeviceIndex), async (me) =>
                                 {
                                     try
@@ -870,9 +871,10 @@ namespace CameraTests.Views
                                     }
                                 })
                                 .OnTapped(async me => { await SelectAudioSource(); }),
-                            new SettingsButton("🔊", "Audio Mode")
+                            new SettingsButton(IconFont.VolumeHigh, "Audio Mode")
                                 {
                                     TintColor = Color.FromArgb("#B45309"),
+                                    IconColor = Color.FromArgb("#FBBF24"),
                                 }
                                 .ObserveProperty(CameraControl, nameof(CameraControl.AudioMode),
                                     me => { me.Text = CameraControl.AudioMode.ToString(); })
@@ -880,9 +882,10 @@ namespace CameraTests.Views
 
                             //CreateDrawerSectionTitle("Formats", "Choose how the feed is captured"),
 
-                            new SettingsButton("🗂️", "Formats")
+                            new SettingsButton(IconFont.FormatListBulleted, "Formats")
                                 {
                                     TintColor = Color.FromArgb("#4F46E5"),
+                                    IconColor = Color.FromArgb("#818CF8"),
                                 }
                                 .OnTapped(async me =>
                                 {
@@ -926,7 +929,7 @@ namespace CameraTests.Views
                                 .ObserveProperty(CameraControl, nameof(CameraControl.CaptureMode),
                                     me => { me.IsVisible = CameraControl.CaptureMode == CaptureModeType.Still; }),
 
-                            new SettingsButton("🗂️", "Formats") { TintColor = Color.FromArgb("#4F46E5"), }
+                            new SettingsButton(IconFont.FormatListBulleted, "Formats") { TintColor = Color.FromArgb("#4F46E5"), IconColor = Color.FromArgb("#818CF8"), }
                                 .OnTapped(async me => { await ShowVideoFormatPicker(); })
                                 .ObserveProperties(CameraControl,
                                     new[]
@@ -967,9 +970,11 @@ namespace CameraTests.Views
                                     me => { me.IsVisible = CameraControl.CaptureMode == CaptureModeType.Video; }),
 
 
-                            new SettingsButton("❌", "Abort")
+                            new SettingsButton(IconFont.Close, "Abort")
                                 {
-                                    TintColor = Color.FromArgb("#E11D48"), IsVisible = false
+                                    TintColor = Color.FromArgb("#E11D48"),
+                                    IconColor = Color.FromArgb("#F87171"),
+                                    IsVisible = false
                                 }
                                 .Assign(out _videoRecordButton)
                                 .OnTapped(async me => { await AbortVideoRecording(); })
@@ -1007,7 +1012,7 @@ namespace CameraTests.Views
                         {
                             //CreateDrawerSectionTitle("Realtime Processing", "Live pipeline controls for the demo"),
 
-                            new SettingsButton("⚙️", "Processing: ON") { TintColor = Color.FromArgb("#10B981"), }
+                            new SettingsButton(IconFont.Cog, "Processing: ON") { TintColor = Color.FromArgb("#10B981"), IconColor = Color.FromArgb("#34D399"), }
                                 .OnTapped(me =>
                                 {
                                     CameraControl.UseRealtimeVideoProcessing =
@@ -1023,9 +1028,10 @@ namespace CameraTests.Views
                                             ? Color.FromArgb("#10B981")
                                             : Color.FromArgb("#6B7280");
                                     }),
-                            new SettingsButton("🎨", $"Effect: {ShaderEffectHelper.GetTitle(ShaderEffect.None)}")
+                            new SettingsButton(IconFont.Palette, $"Effect: {ShaderEffectHelper.GetTitle(ShaderEffect.None)}")
                                 {
                                     TintColor = Color.FromArgb("#6B7280"),
+                                    IconColor = Color.FromArgb("#F472B6"),
                                 }
                                 .OnTapped(me => { CycleEffect(); })
                                 .ObserveProperty(CameraControl, nameof(CameraControl.UseRealtimeVideoProcessing),
@@ -1038,7 +1044,7 @@ namespace CameraTests.Views
                                         ? Color.FromArgb("#10B981")
                                         : Color.FromArgb("#6B7280");
                                 }),
-                            new SettingsButton("🎧", "Audio Monitor: OFF") { TintColor = Color.FromArgb("#6B7280"), }
+                            new SettingsButton(IconFont.Headphones, "Audio Monitor: OFF") { TintColor = Color.FromArgb("#6B7280"), IconColor = Color.FromArgb("#22D3EE"), }
                                 .OnTapped(me => { IsAudioMonitoringEnabled = !IsAudioMonitoringEnabled; })
                                 .ObserveProperty(this, nameof(IsAudioMonitoringEnabled), me =>
                                 {
@@ -1047,11 +1053,11 @@ namespace CameraTests.Views
                                         ? Color.FromArgb("#10B981")
                                         : Color.FromArgb("#6B7280");
                                 }),
-                            new SettingsButton("📊", "Visualizer") { TintColor = Color.FromArgb("#65A30D"), }
+                            new SettingsButton(IconFont.ChartBar, "Visualizer") { TintColor = Color.FromArgb("#65A30D"), IconColor = Color.FromArgb("#A3E635"), }
                                 .OnTapped(me => { CameraControl.SwitchVisualizer(); })
                                 .ObserveProperty(() => CameraControl, nameof(CameraControl.VisualizerName),
                                     me => { me.Text = CameraControl.VisualizerName; }),
-                            new SettingsButton("📈", "Gain: ON") { TintColor = Color.FromArgb("#10B981"), }
+                            new SettingsButton(IconFont.ChartLine, "Gain: ON") { TintColor = Color.FromArgb("#10B981"), IconColor = Color.FromArgb("#86EFAC"), }
                                 .OnTapped(me => { CameraControl.UseGain = !CameraControl.UseGain; })
                                 .ObserveProperty(CameraControl, nameof(CameraControl.UseGain), me =>
                                 {
@@ -1060,7 +1066,7 @@ namespace CameraTests.Views
                                         ? Color.FromArgb("#10B981")
                                         : Color.FromArgb("#6B7280");
                                 }),
-                            new SettingsButton("🎙️", "Speech: OFF") { TintColor = Color.FromArgb("#475569"), }
+                            new SettingsButton(IconFont.ClosedCaption, "Speech: OFF") { TintColor = Color.FromArgb("#475569"), IconColor = Color.FromArgb("#7DD3FC"), }
                                 .Assign(out _speechButton)
                                 .OnTapped(me => { ToggleSpeech(); }),
                         }
@@ -1085,14 +1091,14 @@ namespace CameraTests.Views
                         {
                             //CreateDrawerSectionTitle("Recording Output", "Decide what the demo saves and exports"),
 
-                            new SettingsButton("🔇", "Audio") { TintColor = Color.FromArgb("#6B7280"), }
+                            new SettingsButton(IconFont.VolumeOff, "Audio") { TintColor = Color.FromArgb("#6B7280"), IconColor = Color.FromArgb("#FBBF24"), }
                                 .OnTapped(me =>
                                 {
                                     CameraControl.EnableAudioRecording = !CameraControl.EnableAudioRecording;
                                 })
                                 .ObserveProperty(CameraControl, nameof(CameraControl.EnableAudioRecording), me =>
                                 {
-                                    me.AccessoryIcon = CameraControl.EnableAudioRecording ? "🔊" : "🔇";
+                                    me.AccessoryIcon = CameraControl.EnableAudioRecording ? IconFont.VolumeHigh : IconFont.VolumeOff;
                                     me.Text = CameraControl.EnableAudioRecording ? "Audio: SAVE" : "Audio: SKIP";
                                     me.TintColor = CameraControl.EnableAudioRecording
                                         ? Color.FromArgb("#10B981")
@@ -1100,12 +1106,12 @@ namespace CameraTests.Views
                                 })
                                 .ObserveProperty(CameraControl, nameof(CameraControl.CaptureMode),
                                     me => { me.IsVisible = CameraControl.CaptureMode == CaptureModeType.Video; }),
-                            new SettingsButton("🎵", "Audio Codec") { TintColor = Color.FromArgb("#475569"), }
+                            new SettingsButton(IconFont.MusicNote, "Audio Codec") { TintColor = Color.FromArgb("#475569"), IconColor = Color.FromArgb("#C4B5FD"), }
                                 .Assign(out _audioCodecButton)
                                 .OnTapped(async me => { await SelectAudioCodec(); })
                                 .ObserveProperty(CameraControl, nameof(CameraControl.CaptureMode),
                                     me => { me.IsVisible = CameraControl.CaptureMode == CaptureModeType.Video; }),
-                            new SettingsButton("📹", "Video") { TintColor = Color.FromArgb("#10B981"), }
+                            new SettingsButton(IconFont.Video, "Video") { TintColor = Color.FromArgb("#10B981"), IconColor = Color.FromArgb("#A78BFA"), }
                                 .OnTapped(me =>
                                 {
                                     CameraControl.EnableVideoRecording = !CameraControl.EnableVideoRecording;
@@ -1119,12 +1125,12 @@ namespace CameraTests.Views
                                 })
                                 .ObserveProperty(CameraControl, nameof(CameraControl.CaptureMode),
                                     me => { me.IsVisible = CameraControl.CaptureMode == CaptureModeType.Video; }),
-                            new SettingsButton("⏳", "Pre-Record: OFF") { TintColor = Color.FromArgb("#6B7280"), }
+                            new SettingsButton(IconFont.TimerSand, "Pre-Record: OFF") { TintColor = Color.FromArgb("#6B7280"), IconColor = Color.FromArgb("#FCD34D"), }
                                 .Assign(out _preRecordingButton)
                                 .OnTapped(async me => { await ShowPreRecordPicker(); })
                                 .ObserveProperty(CameraControl, nameof(CameraControl.CaptureMode),
                                     me => { me.IsVisible = CameraControl.CaptureMode == CaptureModeType.Video; }),
-                            new SettingsButton("📍", "Geotag: OFF") { TintColor = Color.FromArgb("#6B7280"), }
+                            new SettingsButton(IconFont.MapMarker, "Geotag: OFF") { TintColor = Color.FromArgb("#6B7280"), IconColor = Color.FromArgb("#FDA4AF"), }
                                 .OnTapped(me =>
                                 {
                                     CameraControl.InjectGpsLocation = !CameraControl.InjectGpsLocation;

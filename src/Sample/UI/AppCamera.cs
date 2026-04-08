@@ -40,10 +40,9 @@ namespace CameraTests.Views
             ProcessFrame = OnFrameProcessing;
             ProcessPreview = OnFrameProcessing;
 
-#if DEBUG
-            VideoDiagnosticsOn = true;
-            //ConstantUpdate = true;
-#endif
+            VideoDiagnosticsOn = MauiProgram.ShowDebug;
+
+            //ConstantUpdate = true; //this updates camera even if native didn't send any frames
         }
 
         public static readonly BindableProperty UseGainProperty = BindableProperty.Create(

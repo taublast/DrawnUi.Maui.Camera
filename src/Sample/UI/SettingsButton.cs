@@ -59,7 +59,7 @@ public class SettingsButton : SkiaLayout, ISkiaGestureListener
 
         if (_iconLabel != null)
         {
-            _iconLabel.TextColor = Colors.White;
+            _iconLabel.TextColor = IconColor;
         }
 
         if (_label != null)
@@ -78,7 +78,7 @@ public class SettingsButton : SkiaLayout, ISkiaGestureListener
             _shape.StrokeColor = IsHovered
                 ? Color.FromArgb("#88D9F6FF")
                 : Color.FromRgba(TintColor.Red, TintColor.Green, TintColor.Blue, 0.7f);
-            _iconLabel.FontSize = IsHovered ? 17 : 15;
+            _iconLabel.FontSize = IsHovered ? 20 : 18;
         }
     }
 
@@ -115,15 +115,16 @@ public class SettingsButton : SkiaLayout, ISkiaGestureListener
                             LockRatio = 1,
                             Children =
                             {
-                                new SkiaRichLabel()
+                                new SkiaLabel()
                                     {
                                         Text = this.AccessoryIcon,
-                                        FontSize = 15,
+                                        FontFamily = "FontIcons",
+                                        FontSize = 18,
                                         IsVisible = !string.IsNullOrEmpty(this.AccessoryIcon),
                                         UseCache = SkiaCacheType.Operations,
                                         VerticalOptions = LayoutOptions.Center,
                                         HorizontalOptions = LayoutOptions.Center,
-                                        TextColor = Colors.White,
+                                        TextColor = this.IconColor,
                                     }
                                     .Assign(out _iconLabel)
                                     .ObserveProperty(this, nameof(AccessoryIcon), me =>
@@ -234,6 +235,16 @@ public class SettingsButton : SkiaLayout, ISkiaGestureListener
     {
         get => (Color)GetValue(TintColorProperty);
         set => SetValue(TintColorProperty, value);
+    }
+
+    public static readonly BindableProperty IconColorProperty = BindableProperty.Create(
+        nameof(IconColor), typeof(Color), typeof(SettingsButton),
+        Colors.White, propertyChanged: OnLookChanged);
+
+    public Color IconColor
+    {
+        get => (Color)GetValue(IconColorProperty);
+        set => SetValue(IconColorProperty, value);
     }
 
     private static void OnLookChanged(BindableObject bindable, object oldValue, object newValue)
