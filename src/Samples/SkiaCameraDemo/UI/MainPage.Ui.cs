@@ -78,8 +78,8 @@ namespace CameraTests.Views
                                 Children =
                                 {
 #if WINDOWS || MACCATALYST
-                            CreateStageEdgeOverlay(true),
-                            CreateStageEdgeOverlay(false),
+                                    CreateStageEdgeOverlay(true),
+                                    CreateStageEdgeOverlay(false),
 #endif
                                     CreateHeaderPanel()
                                         .Assign(out _headerPanel),

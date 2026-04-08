@@ -48,13 +48,15 @@ public class FrameOverlay : CameraOverlayLayout, IAppOverlay
 
             //then..
 
-            // Double-buffered wrapper: caches transformed content so each frame encoder
-            // thread gets a fast snapshot without stalling on layout work.
             new SkiaLayer()
             {
                 VerticalOptions = LayoutOptions.Fill,
                 HorizontalOptions = LayoutOptions.Fill,
-                UseCache = SkiaCacheType.ImageDoubleBuffered,
+                // If you have a more complex overlay could uncomment
+                //UseCache = SkiaCacheType.ImageDoubleBuffered,
+                // So this would be a double-buffered wrapper:
+                // would cache transformed content so each frame encoder
+                // thread gets a fast snapshot without stalling on layout work.
                 Children =
                 {
                     new CameraOverlayContent().Assign(out Content)
@@ -79,6 +81,7 @@ public class FrameOverlay : CameraOverlayLayout, IAppOverlay
             new SkiaShape()
             {
                 Type = ShapeType.Rectangle,
+                UseCache = SkiaCacheType.ImageDoubleBuffered,
                 Margin = 16,
                 Padding = new Thickness(12, 10, 12, 12),
                 WidthRequest = 220,
@@ -119,12 +122,14 @@ public class FrameOverlay : CameraOverlayLayout, IAppOverlay
                         .Assign(out visualizer)
                 }
             }.Assign(out panelVisualizer),
+
+            //CAPTIONS 
             new SkiaShape()
             {
-                UseCache = SkiaCacheType.Image,
+                UseCache = SkiaCacheType.Image, //need image to be used as shader source for disappearing anim
                 Type = ShapeType.Rectangle,
                 CornerRadius = 26,
-                Margin = new Thickness(20, 0, 20, 20),
+                Margin = new Thickness(20, 0, 20, 40),
                 Padding = new Thickness(20, 16, 20, 18),
                 HorizontalOptions = LayoutOptions.Center,
                 VerticalOptions = LayoutOptions.End,
