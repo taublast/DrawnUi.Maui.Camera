@@ -34,6 +34,8 @@ public class FrameOverlay : CameraOverlayLayout, IAppOverlay
     private SkiaShape _captionsPanel;
     private AudioVisualizer visualizer;
     private SkiaShape panelVisualizer;
+    private AnimatedShaderEffect _captionExitEffect;
+    private string _latestCaptionText = string.Empty;
     private bool _wasPreviewMode;
 
     public FrameOverlay()
@@ -186,42 +188,47 @@ public class FrameOverlay : CameraOverlayLayout, IAppOverlay
 
     public void SetCaptions(IList<string> spans)
     {
-        var hide = spans.Count < 1;
-        if (hide)
+        _latestCaptionText = spans.Count > 0
+            ? string.Join(Environment.NewLine, spans)
+            : string.Empty;
+
+        if (string.IsNullOrEmpty(_latestCaptionText))
         {
-            if (!string.IsNullOrEmpty(CaptionsLabel.Text))
-            {
-                SetCaptionsVisible(false); //animated
-            }
-            else
-            {
-                CaptionsLabel.Text = string.Empty;
-            }
+            SetCaptionsVisible(false);
         }
         else
         {
+            CancelCaptionExitAnimation();
+            CaptionsLabel.Text = _latestCaptionText;
             SetCaptionsVisible(true);
-            CaptionsLabel.Text = string.Join(Environment.NewLine, spans);
         }
     }
 
     private void SetCaptionsVisibleInternal(bool isVisible)
     {
-        if (isVisible)
-        {
-            isVisible = !string.IsNullOrEmpty(CaptionsLabel.Text) && _canShowCaptions;
-        }
+        var shouldShow = isVisible && _canShowCaptions && !string.IsNullOrEmpty(_latestCaptionText);
 
-        if (!isVisible)
+        if (!shouldShow)
         {
-            if (!string.IsNullOrEmpty(CaptionsLabel.Text))
+            if (!string.IsNullOrEmpty(CaptionsLabel.Text) && _captionsPanel.IsVisible)
             {
                 AnimateOut(_captionsPanel);
                 return;
             }
+
+            CancelCaptionExitAnimation();
+            CaptionsLabel.Text = string.Empty;
+            _captionsPanel.IsVisible = false;
+            return;
         }
 
-        _captionsPanel.IsVisible = isVisible;
+        CancelCaptionExitAnimation();
+        if (!string.Equals(CaptionsLabel.Text, _latestCaptionText, StringComparison.Ordinal))
+        {
+            CaptionsLabel.Text = _latestCaptionText;
+        }
+
+        _captionsPanel.IsVisible = true;
     }
 
     private bool _canShowCaptions;
@@ -232,9 +239,25 @@ public class FrameOverlay : CameraOverlayLayout, IAppOverlay
         SetCaptionsVisibleInternal(isVisible);
     }
 
+    private void CancelCaptionExitAnimation()
+    {
+        if (_captionExitEffect == null)
+        {
+            return;
+        }
+
+        var effect = _captionExitEffect;
+        _captionExitEffect = null;
+        effect.Stop();
+        _captionsPanel.VisualEffects.Remove(effect);
+        _captionsPanel.DisposeObject(effect);
+    }
+
 
     void AnimateOut(SkiaControl control)
     {
+        CancelCaptionExitAnimation();
+
         var animExit = new AnimatedShaderEffect()
         {
             UseBackground = PostRendererEffectUseBackgroud.Once,
@@ -242,11 +265,27 @@ public class FrameOverlay : CameraOverlayLayout, IAppOverlay
             DurationMs = 400
         };
 
+        _captionExitEffect = animExit;
+
         animExit.Completed += (sender, args) =>
         {
-            control.IsVisible = false;
+            if (!ReferenceEquals(_captionExitEffect, animExit))
+            {
+                return;
+            }
+
+            _captionExitEffect = null;
             control.VisualEffects.Remove(animExit);
+            if (_canShowCaptions && !string.IsNullOrEmpty(_latestCaptionText))
+            {
+                CaptionsLabel.Text = _latestCaptionText;
+                control.IsVisible = true;
+                control.DisposeObject(animExit);
+                return;
+            }
+
             CaptionsLabel.Text = string.Empty;
+            control.IsVisible = false;
             control.DisposeObject(animExit);
         };
 

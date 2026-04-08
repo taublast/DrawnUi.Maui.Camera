@@ -16,6 +16,11 @@ namespace CameraTests.Services
     /// </summary>
     public class OpenAiRealtimeTranscriptionService : IRealtimeTranscriptionService
     {
+        /// <summary>
+        /// Silence length in milliseconds considered as "stopped talking, can start detecting"
+        /// </summary>
+        private const int SILENCE_THRESHOLD_MS = 250;
+
         private const string WebSocketUrl = "wss://api.openai.com/v1/realtime?intent=transcription";
         private const int TargetSampleRate = 24000;
         private static readonly byte[] AudioAppendPrefix = Encoding.UTF8.GetBytes("{\"type\":\"input_audio_buffer.append\",\"audio\":\"");
@@ -191,7 +196,7 @@ namespace CameraTests.Services
                         type = "server_vad",
                         threshold = 0.5,
                         prefix_padding_ms = 300,
-                        silence_duration_ms = 500
+                        silence_duration_ms = SILENCE_THRESHOLD_MS
                     },
                     input_audio_noise_reduction = new
                     {
