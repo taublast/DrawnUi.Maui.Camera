@@ -34,6 +34,8 @@ public class FrameOverlay : CameraOverlayLayout, IAppOverlay
     private SkiaShape _captionsPanel;
     private AudioVisualizer visualizer;
     private SkiaShape panelVisualizer;
+    private AnimatedShaderEffect _captionExitEffect;
+    private string _latestCaptionText = string.Empty;
     private bool _wasPreviewMode;
 
     public FrameOverlay()
@@ -46,13 +48,15 @@ public class FrameOverlay : CameraOverlayLayout, IAppOverlay
 
             //then..
 
-            // Double-buffered wrapper: caches transformed content so each frame encoder
-            // thread gets a fast snapshot without stalling on layout work.
             new SkiaLayer()
             {
                 VerticalOptions = LayoutOptions.Fill,
                 HorizontalOptions = LayoutOptions.Fill,
-                UseCache = SkiaCacheType.ImageDoubleBuffered,
+                // If you have a more complex overlay could uncomment
+                //UseCache = SkiaCacheType.ImageDoubleBuffered,
+                // So this would be a double-buffered wrapper:
+                // would cache transformed content so each frame encoder
+                // thread gets a fast snapshot without stalling on layout work.
                 Children =
                 {
                     new CameraOverlayContent().Assign(out Content)
@@ -77,6 +81,7 @@ public class FrameOverlay : CameraOverlayLayout, IAppOverlay
             new SkiaShape()
             {
                 Type = ShapeType.Rectangle,
+                UseCache = SkiaCacheType.ImageDoubleBuffered,
                 Margin = 16,
                 Padding = new Thickness(12, 10, 12, 12),
                 WidthRequest = 220,
@@ -117,12 +122,14 @@ public class FrameOverlay : CameraOverlayLayout, IAppOverlay
                         .Assign(out visualizer)
                 }
             }.Assign(out panelVisualizer),
+
+            //CAPTIONS 
             new SkiaShape()
             {
-                UseCache = SkiaCacheType.Image,
+                UseCache = SkiaCacheType.Image, //need image to be used as shader source for disappearing anim
                 Type = ShapeType.Rectangle,
                 CornerRadius = 26,
-                Margin = new Thickness(20, 0, 20, 20),
+                Margin = new Thickness(20, 0, 20, 40),
                 Padding = new Thickness(20, 16, 20, 18),
                 HorizontalOptions = LayoutOptions.Center,
                 VerticalOptions = LayoutOptions.End,
@@ -186,42 +193,47 @@ public class FrameOverlay : CameraOverlayLayout, IAppOverlay
 
     public void SetCaptions(IList<string> spans)
     {
-        var hide = spans.Count < 1;
-        if (hide)
+        _latestCaptionText = spans.Count > 0
+            ? string.Join(Environment.NewLine, spans)
+            : string.Empty;
+
+        if (string.IsNullOrEmpty(_latestCaptionText))
         {
-            if (!string.IsNullOrEmpty(CaptionsLabel.Text))
-            {
-                SetCaptionsVisible(false); //animated
-            }
-            else
-            {
-                CaptionsLabel.Text = string.Empty;
-            }
+            SetCaptionsVisible(false);
         }
         else
         {
+            CancelCaptionExitAnimation();
+            CaptionsLabel.Text = _latestCaptionText;
             SetCaptionsVisible(true);
-            CaptionsLabel.Text = string.Join(Environment.NewLine, spans);
         }
     }
 
     private void SetCaptionsVisibleInternal(bool isVisible)
     {
-        if (isVisible)
-        {
-            isVisible = !string.IsNullOrEmpty(CaptionsLabel.Text) && _canShowCaptions;
-        }
+        var shouldShow = isVisible && _canShowCaptions && !string.IsNullOrEmpty(_latestCaptionText);
 
-        if (!isVisible)
+        if (!shouldShow)
         {
-            if (!string.IsNullOrEmpty(CaptionsLabel.Text))
+            if (!string.IsNullOrEmpty(CaptionsLabel.Text) && _captionsPanel.IsVisible)
             {
                 AnimateOut(_captionsPanel);
                 return;
             }
+
+            CancelCaptionExitAnimation();
+            CaptionsLabel.Text = string.Empty;
+            _captionsPanel.IsVisible = false;
+            return;
         }
 
-        _captionsPanel.IsVisible = isVisible;
+        CancelCaptionExitAnimation();
+        if (!string.Equals(CaptionsLabel.Text, _latestCaptionText, StringComparison.Ordinal))
+        {
+            CaptionsLabel.Text = _latestCaptionText;
+        }
+
+        _captionsPanel.IsVisible = true;
     }
 
     private bool _canShowCaptions;
@@ -232,9 +244,25 @@ public class FrameOverlay : CameraOverlayLayout, IAppOverlay
         SetCaptionsVisibleInternal(isVisible);
     }
 
+    private void CancelCaptionExitAnimation()
+    {
+        if (_captionExitEffect == null)
+        {
+            return;
+        }
+
+        var effect = _captionExitEffect;
+        _captionExitEffect = null;
+        effect.Stop();
+        _captionsPanel.VisualEffects.Remove(effect);
+        _captionsPanel.DisposeObject(effect);
+    }
+
 
     void AnimateOut(SkiaControl control)
     {
+        CancelCaptionExitAnimation();
+
         var animExit = new AnimatedShaderEffect()
         {
             UseBackground = PostRendererEffectUseBackgroud.Once,
@@ -242,11 +270,27 @@ public class FrameOverlay : CameraOverlayLayout, IAppOverlay
             DurationMs = 400
         };
 
+        _captionExitEffect = animExit;
+
         animExit.Completed += (sender, args) =>
         {
-            control.IsVisible = false;
+            if (!ReferenceEquals(_captionExitEffect, animExit))
+            {
+                return;
+            }
+
+            _captionExitEffect = null;
             control.VisualEffects.Remove(animExit);
+            if (_canShowCaptions && !string.IsNullOrEmpty(_latestCaptionText))
+            {
+                CaptionsLabel.Text = _latestCaptionText;
+                control.IsVisible = true;
+                control.DisposeObject(animExit);
+                return;
+            }
+
             CaptionsLabel.Text = string.Empty;
+            control.IsVisible = false;
             control.DisposeObject(animExit);
         };
 

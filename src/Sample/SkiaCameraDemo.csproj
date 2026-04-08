@@ -112,7 +112,7 @@
 
 
   <ItemGroup>
-    <Compile Include="..\..\..\..\Secrets.Ai.cs" Link="Secrets.Ai.cs" />
+    <Compile Include="..\..\..\Secrets.Ai.cs" Link="Secrets.Ai.cs" />
   </ItemGroup>
 
 
@@ -135,8 +135,7 @@
     </ItemGroup>
 
     <ItemGroup>
-      
-        <ProjectReference Include="..\..\Lib\DrawnUi.Maui.Camera.csproj" />
+        <ProjectReference Include="..\Lib\DrawnUi.Maui.Camera.csproj" />
 	</ItemGroup>
 
     <ItemGroup>

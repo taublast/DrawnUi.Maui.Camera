@@ -13,6 +13,7 @@ namespace CameraTests.Services
     public class RealtimeCaptionsEngine : IDisposable
     {
         private const int PartialRenderIntervalMs = 66;
+        private static readonly TimeSpan MergeCompletedLineWindow = TimeSpan.FromSeconds(1.2);
         private static readonly long PartialRenderIntervalTicks = TimeSpan.FromMilliseconds(PartialRenderIntervalMs).Ticks;
 
         public IList<string> Spans = new List<string>(128);
@@ -63,6 +64,27 @@ namespace CameraTests.Services
         }
 
         /// <summary>
+        /// Replace the current interim caption with a fresh snapshot.
+        /// This is used for streaming ASR updates where the whole visible interim text
+        /// should be replaced instead of appended token-by-token.
+        /// </summary>
+        public void SetPartialText(string text)
+        {
+            lock (_sync)
+            {
+                _partialText.Clear();
+
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    _partialText.Append(text.Trim());
+                }
+
+                CancelScheduledPartialRenderLocked();
+                RenderLocked();
+            }
+        }
+
+        /// <summary>
         /// Finalize the current utterance with the completed transcript.
         /// Resets partial text and starts a new caption slot.
         /// </summary>
@@ -70,9 +92,21 @@ namespace CameraTests.Services
         {
             lock (_sync)
             {
-                if (!string.IsNullOrWhiteSpace(text))
+                var trimmed = text?.Trim();
+                if (!string.IsNullOrWhiteSpace(trimmed))
                 {
-                    _lines.Add(new CaptionLine { Text = text.Trim(), CreatedUtc = DateTime.UtcNow });
+                    var now = DateTime.UtcNow;
+                    if (_lines.Count > 0 && now - _lines[^1].CreatedUtc <= MergeCompletedLineWindow)
+                    {
+                        var merged = _lines[^1];
+                        merged.Text = MergeCaptionText(merged.Text, trimmed);
+                        merged.CreatedUtc = now;
+                        _lines[^1] = merged;
+                    }
+                    else
+                    {
+                        _lines.Add(new CaptionLine { Text = trimmed, CreatedUtc = now });
+                    }
                 }
                 _partialText.Clear();
                 CancelScheduledPartialRenderLocked();
@@ -145,6 +179,36 @@ namespace CameraTests.Services
                 _partialRenderScheduled = false;
                 RenderLocked();
             }
+        }
+
+        private static string MergeCaptionText(string current, string addition)
+        {
+            if (string.IsNullOrWhiteSpace(current))
+            {
+                return addition;
+            }
+
+            if (string.IsNullOrWhiteSpace(addition))
+            {
+                return current;
+            }
+
+            var trimmedCurrent = current.TrimEnd();
+            var trimmedAddition = addition.TrimStart();
+
+            if (trimmedCurrent.Length == 0)
+            {
+                return trimmedAddition;
+            }
+
+            if (trimmedAddition.Length == 0)
+            {
+                return trimmedCurrent;
+            }
+
+            return char.IsPunctuation(trimmedAddition[0])
+                ? string.Concat(trimmedCurrent, trimmedAddition)
+                : string.Concat(trimmedCurrent, " ", trimmedAddition);
         }
 
         /// <summary>

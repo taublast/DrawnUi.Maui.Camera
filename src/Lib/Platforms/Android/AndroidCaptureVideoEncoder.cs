@@ -149,6 +149,13 @@ namespace DrawnUi.Camera
         private long _videoTimestampBaseNs = -1;
         private bool _videoClockMismatchDetected;
         private long _audioPtsOffsetUs = 0;
+        /// <summary>
+        /// Inline A/V sync: first video PTS (µs) actually written to muxer.
+        /// Audio is gated behind this; both tracks shifted so video starts at PTS 0.
+        /// Only active when UseSharedMediaOriginForLiveSync = true (non-prerecording with audio).
+        /// Value of -1 means first video hasn't arrived yet.
+        /// </summary>
+        private long _avSyncOffsetUs = -1;
         private TimeSpan _deferredPreRecordingFirstFrameOffset = TimeSpan.MinValue;
         private long _firstBufferedVideoAbsoluteUs = -1;
         private long _deferredPreRecordingFirstBufferedVideoAbsoluteUs = -1;
@@ -556,6 +563,7 @@ namespace DrawnUi.Camera
             _useDeferredPreRecordingSeamSync = false;
             _preRecordingDuration = TimeSpan.Zero;
             _firstEncodedFrameOffset = TimeSpan.MinValue;
+            _avSyncOffsetUs = -1;
             _deferredPreRecordingFirstFrameOffset = TimeSpan.MinValue;
             _firstBufferedVideoAbsoluteUs = -1;
             _deferredPreRecordingFirstBufferedVideoAbsoluteUs = -1;
@@ -1248,6 +1256,7 @@ namespace DrawnUi.Camera
             _audioPtsBaseNs = -1;
             _audioPtsOffsetUs = 0;
             _audioPresentationTimeUs = 0;
+            _avSyncOffsetUs = -1;
 
             // Create muxer for normal recording
             _muxer = new MediaMuxer(_outputPath, MuxerOutputType.Mpeg4);
@@ -2076,6 +2085,11 @@ namespace DrawnUi.Camera
 
                 long ptsNanos = ResolveVideoPtsNanos(timestamp, timestampNs, out var frameTimestamp);
 
+                // Capture A/V sync offset from the very first frame PTS, immediately —
+                // don't wait for it to round-trip through the encoder pipeline.
+                if (UseSharedMediaOriginForLiveSync)
+                    System.Threading.Interlocked.CompareExchange(ref _avSyncOffsetUs, ptsNanos / 1000, -1);
+
                 // 1. Render camera texture to the encoder's framebuffer
                 // CRITICAL: Reset GL state before rendering OES texture!
                 // Skia modifies many GL states (blend, depth, stencil, scissor, program, etc.)
@@ -2140,12 +2154,25 @@ namespace DrawnUi.Camera
 
                 if (frameProcessor != null || videoDiagnosticsOn)
                 {
+                    // Align overlay time with muxer A/V sync offset so frame.Time
+                    // matches the PTS that actually ends up in the MP4 file.
+                    var displayTime = frameTimestamp;
+                    if (UseSharedMediaOriginForLiveSync)
+                    {
+                        long offset = System.Threading.Interlocked.Read(ref _avSyncOffsetUs);
+                        if (offset > 0)
+                        {
+                            displayTime -= TimeSpan.FromMicroseconds(offset);
+                            if (displayTime < TimeSpan.Zero) displayTime = TimeSpan.Zero;
+                        }
+                    }
+
                     var frame = new DrawableFrame
                     {
                         Width = _width,
                         Height = _height,
                         Canvas = canvas,
-                        Time = frameTimestamp,
+                        Time = displayTime,
                         Scale = 1f  // Recording frame - full size
                     };
 
@@ -2369,6 +2396,10 @@ namespace DrawnUi.Camera
 
                 long ptsNanos = ResolveVideoPtsNanos(timestamp, timestampNs, out var frameTimestamp);
 
+                // Capture A/V sync offset from the very first frame PTS, immediately.
+                if (UseSharedMediaOriginForLiveSync)
+                    System.Threading.Interlocked.CompareExchange(ref _avSyncOffsetUs, ptsNanos / 1000, -1);
+
                 // 1. Render camera texture to the encoder's framebuffer
                 // CRITICAL: Reset GL state before rendering OES texture!
                 // Skia modifies many GL states (blend, depth, stencil, scissor, program, etc.)
@@ -2417,12 +2448,23 @@ namespace DrawnUi.Camera
 
                 if (frameProcessor != null || videoDiagnosticsOn)
                 {
+                    var displayTime = frameTimestamp;
+                    if (UseSharedMediaOriginForLiveSync)
+                    {
+                        long offset = System.Threading.Interlocked.Read(ref _avSyncOffsetUs);
+                        if (offset > 0)
+                        {
+                            displayTime -= TimeSpan.FromMicroseconds(offset);
+                            if (displayTime < TimeSpan.Zero) displayTime = TimeSpan.Zero;
+                        }
+                    }
+
                     var frame = new DrawableFrame
                     {
                         Width = _width,
                         Height = _height,
                         Canvas = canvas,
-                        Time = frameTimestamp,
+                        Time = displayTime,
                         Scale = 1f  // Recording frame - full size
                     };
 
@@ -3472,7 +3514,23 @@ namespace DrawnUi.Camera
                             continue;
                         }
 
-                        bufInfo.Set(0, sample.Size, sample.PresentationTimeUs, sample.Flags);
+                        long writePts = sample.PresentationTimeUs;
+
+                        // Inline A/V sync: capture first video PTS as the shared offset,
+                        // then shift all video frames so the first one starts at PTS 0.
+                        // Audio uses the same offset in DrainAudioEncoder.
+                        if (sample.TrackIndex == _videoTrackIndex && UseSharedMediaOriginForLiveSync)
+                        {
+                            System.Threading.Interlocked.CompareExchange(ref _avSyncOffsetUs, writePts, -1);
+                            long offset = System.Threading.Interlocked.Read(ref _avSyncOffsetUs);
+                            if (offset > 0)
+                            {
+                                writePts -= offset;
+                                if (writePts < 0) writePts = 0;
+                            }
+                        }
+
+                        bufInfo.Set(0, sample.Size, writePts, sample.Flags);
                         lock (_muxerLock)
                         {
                             _muxer.WriteSampleData(sample.TrackIndex, buf, bufInfo);
@@ -3688,6 +3746,7 @@ namespace DrawnUi.Camera
             _audioPresentationTimeUs = 0;
             _lastMuxerAudioPtsUs = 0;
             _maxExpectedEncoderOutputPtsUs = 0;
+            _avSyncOffsetUs = -1;
         }
 
         private long GetBufferedVideoAbsoluteStartUs(TimeSpan firstBufferedFrameTimestamp, TimeSpan initialFrameOffset, long initialFrameAbsoluteUs)
@@ -4157,16 +4216,41 @@ namespace DrawnUi.Camera
                     {
                         if (_muxerStarted && _audioTrackIndex >= 0)
                         {
+                            // Inline A/V sync: when UseSharedMediaOriginForLiveSync is active,
+                            // gate audio writes behind the first video frame arriving at the muxer.
+                            // This drops the ~1s of audio that records before Camera2 session starts
+                            // producing frames, keeping both tracks aligned at PTS 0.
+                            long avOffset = System.Threading.Interlocked.Read(ref _avSyncOffsetUs);
+                            if (UseSharedMediaOriginForLiveSync && avOffset < 0)
+                            {
+                                // First video hasn't arrived yet — silently drop this audio frame
+                                _audioCodec.ReleaseOutputBuffer(encoderStatus, false);
+                                continue;
+                            }
+
+                            long adjustedAudioPts = info.PresentationTimeUs;
+                            if (UseSharedMediaOriginForLiveSync && avOffset > 0)
+                            {
+                                adjustedAudioPts -= avOffset;
+                                if (adjustedAudioPts < 0)
+                                {
+                                    // Audio sample predates first video frame — drop it
+                                    _audioCodec.ReleaseOutputBuffer(encoderStatus, false);
+                                    continue;
+                                }
+                            }
+
                             // Write directly and synchronously — audio frames are small (~4KB, ~43/s)
                             // so disk I/O cost is negligible. Serialized with video writes via _muxerLock.
+                            info.Set(info.Offset, info.Size, adjustedAudioPts, info.Flags);
                             lock (_muxerLock)
                             {
                                 _muxer.WriteSampleData(_audioTrackIndex, encodedData, info);
                                 // Track highest PTS written — codec extrapolates output PTS beyond input PTS
                                 // (one PCM input can yield multiple AAC outputs at input_PTS + n*23220µs).
                                 // CalculateAudioPts must guard against this, not just against _audioPresentationTimeUs.
-                                if (info.PresentationTimeUs > _lastMuxerAudioPtsUs)
-                                    _lastMuxerAudioPtsUs = info.PresentationTimeUs;
+                                if (adjustedAudioPts > _lastMuxerAudioPtsUs)
+                                    _lastMuxerAudioPtsUs = adjustedAudioPts;
                             }
                         }
                         else if (_encodedAudioBuffer != null && _audioPtsBaseNs >= 0)

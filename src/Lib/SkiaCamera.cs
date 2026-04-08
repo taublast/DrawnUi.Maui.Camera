@@ -1949,6 +1949,8 @@ public partial class SkiaCamera : SkiaControl
 
     private void DisplayWasChanged(object sender, SKRect e)
     {
+        DisplayRect = e;
+
         DisplayRectChanged?.Invoke(this, e);
 
         // Update preview scale when display dimensions change
@@ -1957,6 +1959,7 @@ public partial class SkiaCamera : SkiaControl
             UpdatePreviewScale();
         }
     }
+    public SKRect DisplayRect { get; private set; } = SKRect.Empty;
 
     public override void OnWillDisposeWithChildren()
     {
@@ -2005,6 +2008,7 @@ public partial class SkiaCamera : SkiaControl
         _diagBgPaint = null;
         _diagTextPaint?.Dispose();
         _diagTextPaint = null;
+        ReleasePreviewEffectsSurface();
 
         NativeControl?.Dispose();
         NativeControl = null;
@@ -2969,6 +2973,8 @@ public partial class SkiaCamera : SkiaControl
     // Pre-allocated diagnostic overlay paints — reused across frames to avoid per-frame GC pressure
     private SKPaint _diagBgPaint;
     private SKPaint _diagTextPaint;
+    private SKSurface _previewEffectsSurface;
+    private SKImageInfo _previewEffectsSurfaceInfo;
 
     // Cached diagnostic strings — rebuilt every N frames (values change at ~2Hz, no need to rebuild at 30fps)
     private string _diagLine1;
@@ -3501,6 +3507,10 @@ public partial class SkiaCamera : SkiaControl
                         finalImage = processed;
                     }
                 }
+                else
+                {
+                    ReleasePreviewEffectsSurface();
+                }
 
                 // Note: Pre-recording frame buffering happens at the encoder level (platform-specific)
                 // The encoder intercepts encoded frames during the pre-recording phase and buffers them
@@ -3546,6 +3556,78 @@ public partial class SkiaCamera : SkiaControl
         canvas.DrawImage(frame, 0, 0);
     }
 
+    private bool IsPreviewEffectsSurfaceValid(SKSurface surface, int width, int height)
+    {
+        if (surface == null || surface.Handle == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        if (_previewEffectsSurfaceInfo.Width != width || _previewEffectsSurfaceInfo.Height != height)
+        {
+            return false;
+        }
+
+        var surfaceContext = surface.Context;
+        if (surfaceContext == null)
+        {
+            return true;
+        }
+
+        if (surfaceContext.Handle == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        var currentContext = Superview?.GetGRContext();
+        return currentContext != null && currentContext.Handle == surfaceContext.Handle;
+    }
+
+    private void ReleasePreviewEffectsSurface()
+    {
+        var surface = _previewEffectsSurface;
+        if (surface == null)
+        {
+            return;
+        }
+
+        _previewEffectsSurface = null;
+        _previewEffectsSurfaceInfo = default;
+
+        if (Superview != null)
+        {
+            Superview.ReturnSurface(surface);
+        }
+        else
+        {
+            surface.Dispose();
+        }
+    }
+
+    private SKSurface GetPreviewEffectsSurface(int width, int height)
+    {
+        if (!IsPreviewEffectsSurfaceValid(_previewEffectsSurface, width, height))
+        {
+            ReleasePreviewEffectsSurface();
+
+            var superview = Superview;
+            if (superview == null)
+            {
+                return null;
+            }
+
+            _previewEffectsSurface = superview.CreateSurface(width, height, true);
+            if (_previewEffectsSurface == null)
+            {
+                return null;
+            }
+
+            _previewEffectsSurfaceInfo = new SKImageInfo(width, height);
+        }
+
+        return _previewEffectsSurface;
+    }
+
     /// <summary>
     /// Applies lightweight preview diagnostics and ProcessPreview to the preview image and returns the composited result.
     /// </summary>
@@ -3559,13 +3641,16 @@ public partial class SkiaCamera : SkiaControl
             var width = source.Width;
             var height = source.Height;
 
-            var info = new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Premul);
-            // exprerimental use GPU
-            using var surface = Superview.CreateSurface(width, height, true);// SKSurface.Create(info);
+            var surface = GetPreviewEffectsSurface(width, height);
+
             if (surface == null)
+            {
+                System.Diagnostics.Debug.WriteLine($"[SkiaCamera] ApplyPreviewEffects CreateSurface null!");
                 return null;
+            }
 
             var canvas = surface.Canvas;
+            canvas.Clear(SKColors.Transparent);
 
             // Draw raw preview image
             RenderPreviewForProcessing(canvas, source);
@@ -3589,6 +3674,7 @@ public partial class SkiaCamera : SkiaControl
                     IsPreview = true,
                     Scale = PreviewScale  // Use PreviewScale so user can match recording overlay
                 };
+
                 ProcessPreview.Invoke(frame);
 
                 canvas.RestoreToCount(checkpoint);
@@ -3601,10 +3687,17 @@ public partial class SkiaCamera : SkiaControl
             }
 
             // Return composited image
-            return surface.Snapshot();
+            var snapshot = surface.Snapshot();
+            if (snapshot == null)
+            {
+                ReleasePreviewEffectsSurface();
+            }
+
+            return snapshot;
         }
         catch (Exception ex)
         {
+            ReleasePreviewEffectsSurface();
             System.Diagnostics.Debug.WriteLine($"[SkiaCamera] ApplyPreviewEffects error: {ex.Message}");
             return null;
         }

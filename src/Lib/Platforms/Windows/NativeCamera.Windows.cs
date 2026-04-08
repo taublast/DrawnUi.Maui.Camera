@@ -1110,7 +1110,7 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
         }
 
         // Skip if already processing a frame to prevent backlog
-        if (_isProcessingFrame)
+        if (_isProcessingFrame || withError==sender)
             return;
 
         if (!ShouldGeneratePreviewFrame())
@@ -1143,12 +1143,16 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
                     //Debug.WriteLine("[NativeCameraWindows] Frame arrived but no usable bitmap format available");
                 }
             }
+            withError = null;
         }
         catch (Exception e)
         {
+            withError = sender;
             Debug.WriteLine($"[NativeCameraWindows] Frame processing error: {e}");
         }
     }
+
+    private MediaFrameReader withError;
 
     private bool ShouldGeneratePreviewFrame()
     {
