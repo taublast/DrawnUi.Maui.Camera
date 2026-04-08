@@ -18,6 +18,10 @@
 
     </PropertyGroup>
 
+	<PropertyGroup Condition="Exists('..\..\..\Secrets.Ai.cs')">
+        <DefineConstants>$(DefineConstants);HAS_SECRETS_AI</DefineConstants>
+    </PropertyGroup>
+
 	<PropertyGroup>
         <WindowsPackageType>None</WindowsPackageType>
 		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios'">15.0</SupportedOSPlatformVersion>
@@ -112,7 +116,7 @@
 
 
   <ItemGroup>
-    <Compile Include="..\..\..\Secrets.Ai.cs" Link="Secrets.Ai.cs" />
+    <Compile Include="..\..\..\Secrets.Ai.cs" Link="Secrets.Ai.cs" Condition="Exists('..\..\..\Secrets.Ai.cs')" />
   </ItemGroup>
 
 

@@ -8,9 +8,10 @@ namespace AppoMobi
 {
     public partial class Secrets
     {
-        //other parts stored away from git repository
-
-        //like
-        //public static string OpenAiKey = "...";
+        // Paste your OpenAI API key here to enable AI captions.
+        // The app compiles and runs without it; captions are simply disabled.
+#if !HAS_SECRETS_AI
+        public static string OpenAiKey = "";
+#endif
     }
 }

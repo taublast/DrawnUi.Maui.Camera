@@ -132,9 +132,20 @@ namespace CameraTests.Services
         {
             lock (_sync)
             {
-                var cutoff = DateTime.UtcNow.AddSeconds(-_expirySeconds);
-                if (_lines.RemoveAll(l => l.CreatedUtc < cutoff) > 0)
+                // Paragraphs are no longer removed individually on timer — older lines
+                // only roll off when new ones push them past _maxLines (handled in RenderLocked).
+                // Only when the most recently added line's timer expires (and nothing is being
+                // typed as a partial) do we clear everything, which triggers the shader fade-out
+                // on the captions container via the empty-spans path in FrameOverlay.
+                if (_lines.Count == 0 || _partialText.Length > 0)
                 {
+                    return;
+                }
+
+                var cutoff = DateTime.UtcNow.AddSeconds(-_expirySeconds);
+                if (_lines[^1].CreatedUtc < cutoff)
+                {
+                    _lines.Clear();
                     RenderLocked();
                 }
             }
