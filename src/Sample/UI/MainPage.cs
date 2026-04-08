@@ -759,15 +759,11 @@ public partial class MainPage : BasePageReloadable, IDisposable
             //need process
             var imageWithEffect = await CameraControl.RenderCapturedPhotoAsync(captured, null, image =>
             {
-                
-                if (CameraControl.VideoEffect != ShaderEffect.None)
+                var shaderEffect = new SkiaShaderEffect()
                 {
-                    var shaderEffect = new SkiaShaderEffect()
-                    {
-                        ShaderSource = ShaderEffectHelper.GetFilename(CameraControl.VideoEffect),
-                    };
-                    image.VisualEffects.Add(shaderEffect);
-                }
+                    ShaderSource = ShaderEffectHelper.GetFilename(CameraControl.VideoEffect),
+                };
+                image.VisualEffects.Add(shaderEffect);
             }, true);
 
             captured.Image.Dispose();
