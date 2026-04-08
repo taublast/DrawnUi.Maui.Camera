@@ -151,6 +151,8 @@ namespace CameraTests.Views
             {
                 if (CameraControl != null)
                 {
+                    //delay camera startup to avoid too much work when starting up
+                    //let the first screen render faster
                     Tasks.StartDelayed(TimeSpan.FromMilliseconds(500), () =>
                     {
                         CameraControl.IsOn = true;
