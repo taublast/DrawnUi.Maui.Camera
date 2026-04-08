@@ -21,6 +21,26 @@ namespace CameraTests.Services
         /// </summary>
         private const int SILENCE_THRESHOLD_MS = 250;
 
+        /// <summary>
+        /// Can limit language to this, left blank for auto-detect.
+        /// Should be an ISO 639-1 code like "en" or "es".
+        /// Note that specifying a language may improve accuracy and latency,
+        /// but will fail if the detected language doesn't match.
+        /// Auto-detect is more flexible but may have slightly higher latency.
+        /// For best results, set this to the expected language of the audio.
+        /// Supported languages: https://platform.openai.com/docs/speech-to-text/language-support
+        /// </summary>
+        public string Language { get; set; }
+
+        /// <summary>
+        /// Used model for transcription. "gpt-4o-mini-transcribe" is optimized for low-latency transcription
+        /// of streaming audio. Other models may be available in the future with different performance
+        /// and accuracy characteristics.
+        /// Check OpenAI documentation for latest options.
+        /// </summary>
+        public string Model { get; set; } = "gpt-4o-mini-transcribe";
+
+
         private const string WebSocketUrl = "wss://api.openai.com/v1/realtime?intent=transcription";
         private const int TargetSampleRate = 24000;
         private static readonly byte[] AudioAppendPrefix = Encoding.UTF8.GetBytes("{\"type\":\"input_audio_buffer.append\",\"audio\":\"");
@@ -41,9 +61,6 @@ namespace CameraTests.Services
         private int _feedCount;
         private int _queuedPayloadCount;
         private RealtimeTranscriptionSessionState _sessionState = RealtimeTranscriptionSessionState.Off;
-
-        public string Language { get; set; }
-        public string Model { get; set; } = "gpt-4o-mini-transcribe";
 
         public event Action<string> TranscriptionDelta;
         public event Action<string> TranscriptionCompleted;
