@@ -1949,6 +1949,8 @@ public partial class SkiaCamera : SkiaControl
 
     private void DisplayWasChanged(object sender, SKRect e)
     {
+        DisplayRect = e;
+
         DisplayRectChanged?.Invoke(this, e);
 
         // Update preview scale when display dimensions change
@@ -1957,6 +1959,7 @@ public partial class SkiaCamera : SkiaControl
             UpdatePreviewScale();
         }
     }
+    public SKRect DisplayRect { get; private set; } = SKRect.Empty;
 
     public override void OnWillDisposeWithChildren()
     {
@@ -2279,7 +2282,6 @@ public partial class SkiaCamera : SkiaControl
             RescalingQuality = SKFilterQuality.None, //reduce power consumption
 #endif
             CacheRescaledSource = false,
-            UseCache = SkiaCacheType.GPU,
             HorizontalOptions = LayoutOptions.Fill,
             VerticalOptions = LayoutOptions.Fill,
             Aspect = this.Aspect,
