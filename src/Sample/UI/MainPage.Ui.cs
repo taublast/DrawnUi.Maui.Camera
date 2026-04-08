@@ -765,6 +765,19 @@ namespace CameraTests.Views
                         {
                             //CreateDrawerSectionTitle("Capture", "Core camera and input setup"),
 
+                            new SettingsButton("🎦", "Camera: ON")
+                                {
+                                    TintColor = Color.FromArgb("#10B981"),
+                                }
+                                .OnTapped(me => { CameraControl.IsOn = !CameraControl.IsOn; })
+                                .ObserveProperty(CameraControl, nameof(CameraControl.IsOn), me =>
+                                {
+                                    me.Text = CameraControl.IsOn ? "Camera: ON" : "Camera: OFF";
+                                    me.TintColor = CameraControl.IsOn
+                                        ? Color.FromArgb("#10B981")
+                                        : Color.FromArgb("#6B7280");
+                                }),
+
                             new SettingsButton("📸", "Mode") { TintColor = Color.FromArgb("#0891B2"), }
                                 .OnTapped(me => { ToggleCaptureMode(); })
                                 .ObserveProperty(CameraControl, nameof(CameraControl.CaptureMode), me =>
