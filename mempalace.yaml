@@ -1,0 +1,8 @@
+wing: drawnui.maui.camera
+rooms:
+- name: documentation
+  description: Files from docs/
+- name: src
+  description: Files from src/
+- name: general
+  description: Files that don't fit other rooms

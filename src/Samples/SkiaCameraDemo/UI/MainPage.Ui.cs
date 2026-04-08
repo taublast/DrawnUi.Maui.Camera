@@ -83,8 +83,10 @@ namespace CameraTests.Views
 #endif
                                     CreateHeaderPanel()
                                         .Assign(out _headerPanel),
+                                    
                                     CreateCameraControlsPanel()
                                         .Assign(out _cameraControlsPanel),
+                                    
                                     CreateRecordingStopButton(),
 
                                     // Settings Drawer (slides up from bottom)
