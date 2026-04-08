@@ -3562,11 +3562,14 @@ public partial class SkiaCamera : SkiaControl
             var width = source.Width;
             var height = source.Height;
 
-            var info = new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Premul);
-            // exprerimental use GPU
-            using var surface = Superview.CreateSurface(width, height, true);// SKSurface.Create(info);
+            // use GPU
+            using var surface = Superview.CreateSurface(width, height, true); // 
+
             if (surface == null)
+            {
+                System.Diagnostics.Debug.WriteLine($"[SkiaCamera] ApplyPreviewEffects CreateSurface null!");
                 return null;
+            }
 
             var canvas = surface.Canvas;
 
@@ -3592,6 +3595,7 @@ public partial class SkiaCamera : SkiaControl
                     IsPreview = true,
                     Scale = PreviewScale  // Use PreviewScale so user can match recording overlay
                 };
+
                 ProcessPreview.Invoke(frame);
 
                 canvas.RestoreToCount(checkpoint);
