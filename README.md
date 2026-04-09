@@ -24,10 +24,34 @@ Use as Camera or a standalone Audio recorder inside any MAUI app by wrapping wit
 
 ![vlc_0Y0bMKzuHM](https://github.com/user-attachments/assets/21ced7c4-7a05-44bc-ad39-9cfb44c3a4b4)
 
+## What's New for 1.9.7.3
 
+### Android 
 
+Fixes:
+- Fixed stale preview dispayed for a few frames after recording ends.
+
+### Apple
+
+Performance optimizations:
+- During recording: Eliminated 2-3 synchronous GPU→CPU readbacks per frame → now 1 small ReadPixels at preview resolution only
+- Non-recording preview: MetalPreviewScaler no longer stalls on WaitUntilCompleted() → async double-buffered, CPU reads the previous frame while GPU renders the current one
+
+Fixes:
+- Fixed unprocessed preview dispayed when pre-recording canceled.
+
+### Windows
+
+Performance optimizations:
+- Fixed recording processing to go GPU
+- Removed preview GPU→CPU readback
+
+### Shared
+
+- Updated DrawnUI nuget dependency to fix occasional GPU cache corruption 
+- Sample App added button to cancel pre-recording 
+ 
 ## Sample Apps
-
 
 - [SkiaCamera Demo](https://github.com/taublast/DrawnUi.Maui.Camera/tree/main/src/Sample) - This repo: recording with processing, shaders, AI captions.
 - [Filters Camera](https://github.com/taublast/ShadersCamera) - Still photo-camera with realtime SKSL shaders as photo-filters.
