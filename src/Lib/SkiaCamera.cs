@@ -3442,6 +3442,16 @@ public partial class SkiaCamera : SkiaControl
                 return img; // renderer takes ownership and must dispose
             return null; // no fallback to raw preview during recording
         }
+
+        if ((IsRecording || IsPreRecording) && UseRecordingFramesForPreview)
+        {
+            return null;
+        }
+
+        if (IsAwaitingAppleFreshPreviewAfterRecordingStop)
+        {
+            return null;
+        }
 #endif
         return NativeControl.GetPreviewImage();
     }

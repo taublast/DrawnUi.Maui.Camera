@@ -1951,6 +1951,29 @@ public partial class NativeCamera : NSObject, IDisposable, INativeCamera, INotif
         }
     }
 
+    internal void ClearBufferedPreviewFrame()
+    {
+        lock (_lockPreview)
+        {
+            var preview = _preview;
+            _preview = null;
+            preview?.Dispose();
+
+            _kill?.Dispose();
+            _kill = null;
+        }
+
+        lock (_lockRawFrame)
+        {
+            if (_latestRawFrame != null)
+            {
+                _latestRawFrame.PixelData = null;
+                _rawFrameDataPool.Enqueue(_latestRawFrame);
+                _latestRawFrame = null;
+            }
+        }
+    }
+
     private bool ShouldGeneratePreviewFrame()
     {
         return true;

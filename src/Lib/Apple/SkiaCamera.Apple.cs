@@ -23,6 +23,9 @@ public partial class SkiaCamera
     private const bool ShouldOptimizeForNetworkUse = false; //might reduce heat and throttling
     private int _appleAwaitingPostStopPreviewFrame;
 
+    internal bool IsAwaitingAppleFreshPreviewAfterRecordingStop =>
+        System.Threading.Volatile.Read(ref _appleAwaitingPostStopPreviewFrame) != 0;
+
     private AppleVideoToolboxEncoder _deferredPreRecordingEncoder;
     private AudioSample[] _preRecordedAudioSamples;  // Saved at pre-rec → live transition
 
@@ -2142,12 +2145,7 @@ public partial class SkiaCamera
 
         FrameAquired = false;
 
-        if (appleCam.HasBufferedPreviewFrame())
-        {
-            System.Threading.Interlocked.Exchange(ref _appleAwaitingPostStopPreviewFrame, 0);
-            SafeAction(() => UpdatePreview());
-            return;
-        }
+        appleCam.ClearBufferedPreviewFrame();
 
         System.Threading.Interlocked.Exchange(ref _appleAwaitingPostStopPreviewFrame, 1);
     }
