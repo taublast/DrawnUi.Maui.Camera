@@ -841,11 +841,9 @@ public partial class SkiaCamera : SkiaControl
         // Stop preview audio - recording will take over with its own audio capture
         StopPreviewAudioCapture();
 
-        // Create platform-specific encoder with existing GRContext (GPU path)
-        // BUGFIX: Passing GRContext from the UI thread causes freeze/deadlock during window resize because the context 
-        // is destroyed/recreated while the background encoder task is trying to use it. 
-        // Also, since we do CPU readback anyway (ReadPixels), using a GPU surface here is actually slower (upload + readback).
-        // By passing null, we force a CPU-backed surface which is thread-safe and faster for this specific pipeline.
+        // Create platform-specific encoder without borrowing the UI GRContext.
+        // Windows recording composition runs on a background thread with a raster surface,
+        // avoiding ANGLE/GRContext races with the UI render pipeline during resize.
         GRContext grContext = null; // (Superview?.CanvasView as SkiaViewAccelerated)?.GRContext;
         _captureVideoEncoder = new WindowsCaptureVideoEncoder(grContext);
 
@@ -1033,7 +1031,6 @@ public partial class SkiaCamera : SkiaControl
                     return;
                 }
 
-                // Make a copy of the image (original may be disposed after callback returns)
                 var srcImg = captured?.Image;
                 if (srcImg == null)
                 {
@@ -1041,93 +1038,72 @@ public partial class SkiaCamera : SkiaControl
                     return;
                 }
 
-                // Create a raster copy that's safe to use on main thread
-                SKImage imgCopy;
-                try
-                {
-                    using var bmp = new SKBitmap(srcImg.Width, srcImg.Height);
-                    using var canvas = new SKCanvas(bmp);
-                    canvas.DrawImage(srcImg, 0, 0);
-                    imgCopy = SKImage.FromBitmap(bmp);
-                }
-                catch
-                {
-                    System.Threading.Interlocked.Exchange(ref _frameInFlight, 0);
-                    return;
-                }
-
-                // Fire ML hook — raw frame before ProcessFrame overlays, synchronous call expected
-                OnRawFrameAcquired(imgCopy, DeviceRotation);
-
                 var elapsed = DateTime.Now - _captureVideoStartTime;
 
-                // GPU surface must be accessed from main thread
-                MainThread.BeginInvokeOnMainThread(async () =>
+                try
                 {
-                    try
+                    using (winEnc.BeginFrame(elapsed, out var canvas, out var info))
                     {
-                        using (imgCopy)
-                        using (winEnc.BeginFrame(elapsed, out var canvas, out var info))
+                        // Fire ML hook on the encoder path while the source frame is still owned here.
+                        OnRawFrameAcquired(srcImg, DeviceRotation);
+
+                        if (canvas != null)
                         {
-                            if (canvas != null)
+                            var rects = GetAspectFillRects(srcImg.Width, srcImg.Height, info.Width, info.Height);
+                            RenderFrameForRecording(canvas, srcImg, rects.src, rects.dst);
+
+                            if (ProcessFrame != null || VideoDiagnosticsOn)
                             {
-                                var rects = GetAspectFillRects(imgCopy.Width, imgCopy.Height, info.Width, info.Height);
-                                //canvas.DrawImage(imgCopy, rects.src, rects.dst);
-                                RenderFrameForRecording(canvas, imgCopy, rects.src, rects.dst);
+                                var rotation = GetActiveRecordingRotation();
+                                var needsCheckpoint = ProcessFrame != null || (VideoDiagnosticsOn && rotation != 0);
+                                var checkpoint = 0;
 
-                                if (ProcessFrame != null || VideoDiagnosticsOn)
+                                if (needsCheckpoint)
                                 {
-                                    var rotation = GetActiveRecordingRotation();
-                                    var needsCheckpoint = ProcessFrame != null || (VideoDiagnosticsOn && rotation != 0);
-                                    var checkpoint = 0;
-
-                                    if (needsCheckpoint)
-                                    {
-                                        // Keep one isolated scope for callback and diagnostics, while avoiding work
-                                        // for diagnostics-only frames when no rotation transform is needed.
-                                        checkpoint = canvas.Save();
-                                        ApplyCanvasRotation(canvas, info.Width, info.Height, rotation);
-                                    }
-
-                                    if (ProcessFrame != null)
-                                    {
-                                        var (frameWidth, frameHeight) = GetRotatedDimensions(info.Width, info.Height, rotation);
-                                        var frame = new DrawableFrame
-                                        {
-                                            Width = frameWidth,
-                                            Height = frameHeight,
-                                            Canvas = canvas,
-                                            Time = elapsed,
-                                            Scale = 1f
-                                        };
-                                        ProcessFrame.Invoke(frame);
-                                    }
-
-                                    if (VideoDiagnosticsOn)
-                                        DrawDiagnostics(canvas, info.Width, info.Height);
-
-                                    if (needsCheckpoint)
-                                        canvas.RestoreToCount(checkpoint);
+                                    // Keep one isolated scope for callback and diagnostics, while avoiding work
+                                    // for diagnostics-only frames when no rotation transform is needed.
+                                    checkpoint = canvas.Save();
+                                    ApplyCanvasRotation(canvas, info.Width, info.Height, rotation);
                                 }
 
-                                var sw = System.Diagnostics.Stopwatch.StartNew();
-                                await winEnc.SubmitFrameAsync();
-                                sw.Stop();
-                                _diagLastSubmitMs = sw.Elapsed.TotalMilliseconds;
-                                System.Threading.Interlocked.Increment(ref _diagSubmittedFrames);
-                                CalculateRecordingFps();
+                                if (ProcessFrame != null)
+                                {
+                                    var (frameWidth, frameHeight) = GetRotatedDimensions(info.Width, info.Height, rotation);
+                                    var frame = new DrawableFrame
+                                    {
+                                        Width = frameWidth,
+                                        Height = frameHeight,
+                                        Canvas = canvas,
+                                        Time = elapsed,
+                                        Scale = 1f
+                                    };
+                                    ProcessFrame.Invoke(frame);
+                                }
+
+                                if (VideoDiagnosticsOn)
+                                    DrawDiagnostics(canvas, info.Width, info.Height);
+
+                                if (needsCheckpoint)
+                                    canvas.RestoreToCount(checkpoint);
                             }
+
+                            var sw = System.Diagnostics.Stopwatch.StartNew();
+                            winEnc.SubmitFrameAsync().ConfigureAwait(false).GetAwaiter().GetResult();
+                            sw.Stop();
+                            _diagLastSubmitMs = sw.Elapsed.TotalMilliseconds;
+                            System.Threading.Interlocked.Increment(ref _diagSubmittedFrames);
+                            CalculateRecordingFps();
                         }
                     }
-                    catch (Exception ex)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"[Windows CaptureFrame] Error: {ex.Message}");
-                    }
-                    finally
-                    {
-                        System.Threading.Interlocked.Exchange(ref _frameInFlight, 0);
-                    }
-                });
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[Windows CaptureFrame] Error: {ex.Message}");
+                }
+                finally
+                {
+                    System.Threading.Interlocked.Exchange(ref _frameInFlight, 0);
+                }
             };
         }
     }

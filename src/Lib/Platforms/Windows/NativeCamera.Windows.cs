@@ -1061,24 +1061,12 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
         finally
         {
             _isProcessingFrame = false;
-            // Update preview safely
-            lock (_lockPreview)
+            try
             {
-                _preview?.Dispose(); // Only dispose old preview, not the new SKImage
-                _preview = capturedImage;
-                if (capturedImage != null)
-                {
-                    // Update camera metadata with current exposure settings
-                    UpdateCameraMetadata();
-
-                    // Invoke capture callback for encoder (same pattern as Android)
-                    PreviewCaptureSuccess?.Invoke(capturedImage);
-
-                    FormsControl.OnWindowsNativePreviewFrameBuffered();
-
-                    //PREVIEW FRAME READY
-                    FormsControl.UpdatePreview();
-                }
+                DeliverCapturedFrame(capturedImage);
+            }
+            finally
+            {
                 _frameSemaphore?.Release();
             }
         }
@@ -1201,23 +1189,7 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
                     Rotation = rotation
                 };
 
-                // Update preview safely
-                lock (_lockPreview)
-                {
-                    _preview?.Dispose(); // Only dispose old preview, not the new SKImage
-                    _preview = capturedImage;
-                }
-
-                // Update camera metadata with current exposure settings
-                UpdateCameraMetadata();
-
-                // Invoke capture callback for encoder (same pattern as Android)
-                PreviewCaptureSuccess?.Invoke(capturedImage);
-
-                FormsControl.OnWindowsNativePreviewFrameBuffered();
-
-                //PREVIEW FRAME READY
-                FormsControl.UpdatePreview();
+                DeliverCapturedFrame(capturedImage);
             }
         }
         catch (Exception e)
@@ -1228,6 +1200,46 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
         {
             _isProcessingFrame = false;
             _frameSemaphore?.Release();
+        }
+    }
+
+    private void DeliverCapturedFrame(CapturedImage capturedImage)
+    {
+        if (capturedImage == null)
+            return;
+
+        bool useEncoderMirroredPreview = FormsControl.UseRecordingFramesForPreview && (FormsControl.IsRecording || FormsControl.IsPreRecording);
+
+        if (!useEncoderMirroredPreview)
+        {
+            lock (_lockPreview)
+            {
+                _preview?.Dispose();
+                _preview = capturedImage;
+            }
+        }
+
+        try
+        {
+            UpdateCameraMetadata();
+
+            // Recording uses the raw frame synchronously from this callback.
+            PreviewCaptureSuccess?.Invoke(capturedImage);
+
+            if (useEncoderMirroredPreview)
+            {
+                return;
+            }
+
+            FormsControl.OnWindowsNativePreviewFrameBuffered();
+            FormsControl.UpdatePreview();
+        }
+        finally
+        {
+            if (useEncoderMirroredPreview)
+            {
+                capturedImage.Dispose();
+            }
         }
     }
 
