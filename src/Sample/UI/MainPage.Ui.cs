@@ -87,7 +87,7 @@ namespace CameraTests.Views
                                     CreateCameraControlsPanel()
                                         .Assign(out _cameraControlsPanel),
                                     
-                                    CreateRecordingStopButton(),
+                                    CreateWhileRecordingControls(),
 
                                     // Settings Drawer (slides up from bottom)
                                     new SkiaDrawer()
@@ -609,67 +609,102 @@ namespace CameraTests.Views
             };
         }
 
-        private SkiaShape CreateRecordingStopButton()
+        private SkiaLayout CreateWhileRecordingControls()
         {
-            return new SkiaShape()
+            return new SkiaLayout()
                 {
-                    UseCache = SkiaCacheType.Image,
                     IsVisible = false,
+                    UseCache = SkiaCacheType.GPU,
                     ZIndex = 70,
                     HorizontalOptions = LayoutOptions.Center,
                     VerticalOptions = LayoutOptions.End,
                     Margin = new Thickness(0, 0, 0, 56),
-                    Padding = new Thickness(24, 14),
-                    StrokeColor = Color.FromArgb("#66FF7A7A"),
-                    StrokeWidth = 1,
-                    BackgroundColor = Color.FromArgb("#E5162230"),
-                    CornerRadius = 26,
+                    BackgroundColor = Colors.Transparent,
+                    Type = LayoutType.Row,
+                    Spacing = 12,
                     Children =
                     {
-                        new SkiaLayout()
+                        new SkiaShape()
                         {
-                            Type = LayoutType.Row,
-                            Spacing = 10,
-                            HorizontalOptions = LayoutOptions.Center,
-                            VerticalOptions = LayoutOptions.Center,
+                            UseCache = SkiaCacheType.Image,
+                            IsVisible = false,
+                            Padding = new Thickness(24, 14),
+                            StrokeColor = Color.FromArgb("#66FF7A7A"),
+                            StrokeWidth = 1,
+                            BackgroundColor = Color.FromArgb("#E5162230"),
+                            CornerRadius = 26,
                             Children =
                             {
-                                new SkiaShape()
+                                new SkiaLabel("Cancel")
                                 {
-                                    Type = ShapeType.Rectangle,
-                                    WidthRequest = 14,
-                                    HeightRequest = 14,
-                                    CornerRadius = 3,
-                                    BackgroundColor = Color.FromArgb("#FF4D4F"),
+                                    FontSize = 16,
+                                    FontAttributes = FontAttributes.Bold,
+                                    TextColor = Colors.White,
+                                    UseCache = SkiaCacheType.Operations,
                                     VerticalOptions = LayoutOptions.Center,
-                                },
-                                new SkiaLabel("Stop")
-                                    {
-                                        FontSize = 16,
-                                        FontAttributes = FontAttributes.Bold,
-                                        TextColor = Colors.White,
-                                        UseCache = SkiaCacheType.Operations,
-                                        VerticalOptions = LayoutOptions.Center,
-                                    }
-                                    .Assign(out _recordingStopLabel)
+                                }
                             }
                         }
+                        .Assign(out _recordingCancelButton)
+                        .OnTapped(async me =>
+                        {
+                            await me.ScaleToAsync(1.04, 1.04, 90);
+                            await me.ScaleToAsync(1.0, 1.0, 90);
+                            await AbortVideoRecording();
+                        }),
+
+                        new SkiaShape()
+                        {
+                            UseCache = SkiaCacheType.Image,
+                            Padding = new Thickness(24, 14),
+                            StrokeColor = Color.FromArgb("#66FF7A7A"),
+                            StrokeWidth = 1,
+                            BackgroundColor = Color.FromArgb("#E5162230"),
+                            CornerRadius = 26,
+                            Children =
+                            {
+                                new SkiaLayout()
+                                {
+                                    Type = LayoutType.Row,
+                                    Spacing = 10,
+                                    HorizontalOptions = LayoutOptions.Center,
+                                    VerticalOptions = LayoutOptions.Center,
+                                    Children =
+                                    {
+                                        new SkiaShape()
+                                        {
+                                            Type = ShapeType.Circle,
+                                            WidthRequest = 14,
+                                            HeightRequest = 14,
+                                            CornerRadius = 7,
+                                            BackgroundColor = Color.FromArgb("#22C55E"),
+                                            VerticalOptions = LayoutOptions.Center,
+                                        }
+                                        .Assign(out _recordingActionIcon),
+                                        new SkiaLabel("Start")
+                                        {
+                                            FontSize = 16,
+                                            FontAttributes = FontAttributes.Bold,
+                                            TextColor = Colors.White,
+                                            UseCache = SkiaCacheType.Operations,
+                                            VerticalOptions = LayoutOptions.Center,
+                                        }
+                                        .Assign(out _recordingActionLabel)
+                                    }
+                                }
+                            }
+                        }
+                        .Assign(out _recordingActionButton)
+
+                        .OnTapped(async me =>
+                        {
+                            await me.ScaleToAsync(1.04, 1.04, 90);
+                            await me.ScaleToAsync(1.0, 1.0, 90);
+                            ToggleVideoRecording();
+                        })
                     }
                 }
-                .Assign(out _recordingStopButton)
-                .OnTapped(async me =>
-                {
-                    await me.ScaleToAsync(1.04, 1.04, 90);
-                    await me.ScaleToAsync(1.0, 1.0, 90);
-                    //if (CameraControl.IsPreRecording)
-                    //{
-                    //    _ = AbortVideoRecording();
-                    //}
-                    //else
-                    {
-                        ToggleVideoRecording();
-                    }
-                })
+                .Assign(out _recordingStopStartButtons)
                 .ObserveProperty(CameraControl, nameof(CameraControl.State), me =>
                 {
                     me.IsEnabled = CameraControl.State == HardwareState.On;

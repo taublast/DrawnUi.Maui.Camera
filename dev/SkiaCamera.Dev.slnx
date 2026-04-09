@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path="../README.md" />
+  </Folder>
+  <Project Path="../../DrawnUi/src/Maui/DrawnUi/DrawnUi.Maui.csproj" />
+  <Project Path="../../DrawnUi/src/Shared/DrawnUi.Shared.shproj" Id="83974207-9636-48dd-bdb3-98edecbb1107" />
+  <Project Path="../src/Lib/DrawnUi.Maui.Camera.csproj" />
+  <Project Path="../src/Sample/SkiaCameraDemo.csproj">
+    <Deploy Solution="Debug|*" />
+  </Project>
+</Solution>
