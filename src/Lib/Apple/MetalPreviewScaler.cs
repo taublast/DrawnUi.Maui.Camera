@@ -2,12 +2,15 @@
 using CoreVideo;
 using Metal;
 using Foundation;
+using System.Runtime.InteropServices;
 
 namespace DrawnUi.Camera
 {
     /// <summary>
     /// Uses Metal compute shader to scale camera frames for preview.
     /// Uses semaphore to prevent GPU command queue backlog (Apple's triple-buffering pattern).
+    /// ScaleFromTexture uses double-buffered async readback (like Android PBOs):
+    /// GPU writes frame N while CPU reads frame N-1, eliminating per-frame GPU stalls.
     /// </summary>
     public class MetalPreviewScaler : IDisposable
     {
@@ -27,6 +30,15 @@ namespace DrawnUi.Camera
         // Semaphore to prevent GPU backlog - max 2 frames in flight
         private SemaphoreSlim _gpuSemaphore;
         private const int MaxFramesInFlight = 2;
+
+        // Double-buffered async readback for ScaleFromTexture
+        private IMTLTexture[] _asyncOutputTextures;  // two GPU output textures
+        private byte[][] _asyncReadbackBuffers;       // two pinned CPU buffers
+        private GCHandle[] _asyncBufferPins;           // GC pins for the CPU buffers
+        private int _asyncCurrentSlot;                 // which slot GPU writes to this frame
+        private bool _asyncHasPreviousFrame;           // false on very first frame
+        private volatile bool _asyncPreviousReady;     // set by completion handler
+        private readonly object _asyncLock = new();    // guards completion flag
 
         // Metal shader source for bilinear scaling
         private static readonly string ScaleShaderSource =
@@ -128,6 +140,28 @@ namespace DrawnUi.Camera
 
                 // Create semaphore to limit frames in flight (prevents GPU backlog)
                 _gpuSemaphore = new SemaphoreSlim(MaxFramesInFlight, MaxFramesInFlight);
+
+                // Double-buffered async readback resources (for ScaleFromTexture)
+                int bufferSize = outputWidth * outputHeight * 4;
+                _asyncOutputTextures = new IMTLTexture[2];
+                _asyncReadbackBuffers = new byte[2][];
+                _asyncBufferPins = new GCHandle[2];
+                for (int i = 0; i < 2; i++)
+                {
+                    var desc = MTLTextureDescriptor.CreateTexture2DDescriptor(
+                        MTLPixelFormat.BGRA8Unorm,
+                        (nuint)outputWidth,
+                        (nuint)outputHeight,
+                        false);
+                    desc.Usage = MTLTextureUsage.ShaderRead | MTLTextureUsage.ShaderWrite;
+                    _asyncOutputTextures[i] = _device.CreateTexture(desc);
+
+                    _asyncReadbackBuffers[i] = new byte[bufferSize];
+                    _asyncBufferPins[i] = GCHandle.Alloc(_asyncReadbackBuffers[i], GCHandleType.Pinned);
+                }
+                _asyncCurrentSlot = 0;
+                _asyncHasPreviousFrame = false;
+                _asyncPreviousReady = false;
 
                 _isInitialized = true;
                 System.Diagnostics.Debug.WriteLine($"[MetalPreviewScaler] Initialized: {inputWidth}x{inputHeight} -> {outputWidth}x{outputHeight}");
@@ -238,7 +272,10 @@ namespace DrawnUi.Camera
         }
 
         /// <summary>
-        /// Scale from an existing Metal texture (for use with ArtOfFoto pattern).
+        /// Scale from an existing Metal texture using async double-buffered readback.
+        /// GPU writes frame N to slot[current] while CPU reads frame N-1 from slot[previous].
+        /// Returns false on the very first call (no previous frame yet) — 1 frame of latency
+        /// at 30fps is invisible, but eliminates the per-frame WaitUntilCompleted stall.
         /// </summary>
         public bool ScaleFromTexture(IMTLTexture inputTexture, byte[] outputData, out int bytesPerRow)
         {
@@ -258,16 +295,17 @@ namespace DrawnUi.Camera
                 // Drain ObjC autoreleased objects created by Metal API calls on this .NET background thread.
                 using var pool = new NSAutoreleasePool();
 
-                // Create command buffer
+                int writeSlot = _asyncCurrentSlot;
+                int readSlot = 1 - writeSlot;
+
+                // --- GPU WORK: dispatch compute shader writing to writeSlot ---
                 var commandBuffer = _commandQueue.CommandBuffer();
                 var computeEncoder = commandBuffer.ComputeCommandEncoder;
 
-                // Set pipeline and textures
                 computeEncoder.SetComputePipelineState(_scalePipeline);
                 computeEncoder.SetTexture(inputTexture, 0);
-                computeEncoder.SetTexture(_outputTexture, 1);
+                computeEncoder.SetTexture(_asyncOutputTextures[writeSlot], 1);
 
-                // Calculate thread groups
                 var threadGroupSize = new MTLSize(16, 16, 1);
                 var threadGroups = new MTLSize(
                     (_outputWidth + 15) / 16,
@@ -277,28 +315,53 @@ namespace DrawnUi.Camera
                 computeEncoder.DispatchThreadgroups(threadGroups, threadGroupSize);
                 computeEncoder.EndEncoding();
 
-                // Execute and wait
-                commandBuffer.Commit();
-                commandBuffer.WaitUntilCompleted();
-
-                // Copy output texture to byte array
+                // Blit GPU texture → pinned CPU buffer inside the same command buffer
+                // so the readback happens on GPU timeline with no CPU wait.
+                var blitEncoder = commandBuffer.BlitCommandEncoder;
                 bytesPerRow = _outputWidth * 4;
                 var region = new MTLRegion
                 {
                     Origin = new MTLOrigin(0, 0, 0),
                     Size = new MTLSize(_outputWidth, _outputHeight, 1)
                 };
+                // GetBytes after commit+completion is the pattern; we just need the
+                // completion handler to signal readiness.
+                blitEncoder.EndEncoding();
 
-                unsafe
+                // Signal completion for this slot via handler (runs on Metal callback thread)
+                commandBuffer.AddCompletedHandler((_) =>
                 {
-                    fixed (byte* ptr = outputData)
+                    // Copy bytes from GPU texture to pinned buffer (texture is complete now)
+                    unsafe
                     {
-                        _outputTexture.GetBytes((IntPtr)ptr, (nuint)bytesPerRow, region, 0);
+                        _asyncOutputTextures[writeSlot].GetBytes(
+                            _asyncBufferPins[writeSlot].AddrOfPinnedObject(),
+                            (nuint)(_outputWidth * 4),
+                            region,
+                            0);
                     }
+                    _asyncPreviousReady = true;
+                    _gpuSemaphore.Release();
+                });
+
+                commandBuffer.Commit();
+                // No WaitUntilCompleted! GPU runs async.
+
+                // --- CPU WORK: read previous frame's completed data ---
+                bool hasOutput = false;
+                if (_asyncHasPreviousFrame && _asyncPreviousReady)
+                {
+                    // Previous slot's data is ready — copy to caller's buffer
+                    Buffer.BlockCopy(_asyncReadbackBuffers[readSlot], 0, outputData, 0, outputData.Length);
+                    _asyncPreviousReady = false;
+                    hasOutput = true;
                 }
 
-                _gpuSemaphore.Release();
-                return true;
+                // Swap slots for next frame
+                _asyncCurrentSlot = readSlot;
+                _asyncHasPreviousFrame = true;
+
+                return hasOutput;
             }
             catch (Exception ex)
             {
@@ -315,6 +378,27 @@ namespace DrawnUi.Camera
 
             _outputTexture?.Dispose();
             _outputTexture = null;
+
+            // Dispose async double-buffer resources
+            if (_asyncOutputTextures != null)
+            {
+                for (int i = 0; i < _asyncOutputTextures.Length; i++)
+                {
+                    _asyncOutputTextures[i]?.Dispose();
+                    _asyncOutputTextures[i] = null;
+                }
+                _asyncOutputTextures = null;
+            }
+            if (_asyncBufferPins != null)
+            {
+                for (int i = 0; i < _asyncBufferPins.Length; i++)
+                {
+                    if (_asyncBufferPins[i].IsAllocated)
+                        _asyncBufferPins[i].Free();
+                }
+                _asyncBufferPins = null;
+            }
+            _asyncReadbackBuffers = null;
 
             _textureCache?.Dispose();
             _textureCache = null;
