@@ -284,9 +284,12 @@ namespace DrawnUi.Camera
         private int _previewRequested = 1;
         public event EventHandler PreviewAvailable;
 
-        // Cached preview surface to avoid allocating every frame
+        // Cached GPU-backed preview surface — avoids full-res GPU→CPU readback.
+        // Drawing onto a GPU surface keeps the blit GPU→GPU; only the small
+        // ReadPixels at preview resolution crosses to CPU.
         private SKSurface _previewSurface;
         private SKImageInfo _previewSurfaceInfo;
+        private byte[] _previewPixelBuffer;
         private GCHandle _queuePin;
 
         // Statistics
@@ -1103,7 +1106,11 @@ namespace DrawnUi.Camera
 
                     if (shouldGeneratePreview)
                     {
-                        // Create CPU-backed preview snapshot (downscaled to reduce memory)
+                        // GPU→GPU blit: snapshot the encoder surface (GPU ref, no pixel copy),
+                        // draw it downscaled onto a GPU-backed preview surface, then do a
+                        // single small ReadPixels at preview resolution.  This replaces the
+                        // old path that used a CPU raster surface which forced Skia to read
+                        // the FULL encoder frame back to CPU just to downscale it.
                         using var gpuSnap = _surface.Snapshot();
                         if (gpuSnap != null)
                         {
@@ -1117,10 +1124,31 @@ namespace DrawnUi.Camera
                             {
                                 _previewSurface?.Dispose();
                                 _previewSurfaceInfo = pInfo;
-                                _previewSurface = SKSurface.Create(pInfo);
+                                // GPU-backed surface: DrawImage stays GPU→GPU
+                                _previewSurface = _encodingContext != null
+                                    ? SKSurface.Create(_encodingContext, false, pInfo)
+                                    : SKSurface.Create(pInfo); // fallback to CPU if no context
+                                _previewPixelBuffer = new byte[pInfo.RowBytes * ph];
                             }
+
+                            // GPU→GPU downscale blit
                             _previewSurface.Canvas.DrawImage(gpuSnap, new SKRect(0, 0, pw, ph));
-                            snapshot = _previewSurface.Snapshot();
+                            _previewSurface.Canvas.Flush();
+
+                            // Single small GPU→CPU readback at preview resolution only
+                            bool ok;
+                            unsafe
+                            {
+                                fixed (byte* ptr = _previewPixelBuffer)
+                                {
+                                    ok = _previewSurface.ReadPixels(pInfo, (IntPtr)ptr, pInfo.RowBytes, 0, 0);
+                                }
+                            }
+
+                            if (ok)
+                            {
+                                snapshot = SKImage.FromPixelCopy(pInfo, _previewPixelBuffer);
+                            }
 
                             lock (_previewLock)
                             {
@@ -1416,6 +1444,7 @@ namespace DrawnUi.Camera
 
                 _surface?.Dispose(); _surface = null;
                 _previewSurface?.Dispose(); _previewSurface = null;
+                _previewPixelBuffer = null;
             }
 
             // Cleanup files
@@ -1529,6 +1558,7 @@ namespace DrawnUi.Camera
 
                     _surface?.Dispose(); _surface = null;
                     _previewSurface?.Dispose(); _previewSurface = null;
+                    _previewPixelBuffer = null;
                 }
             }
 
@@ -2539,6 +2569,7 @@ namespace DrawnUi.Camera
 
                 _previewSurface?.Dispose();
                 _previewSurface = null;
+                _previewPixelBuffer = null;
 
                 _surface?.Dispose();
                 _surface = null;
