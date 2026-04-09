@@ -139,7 +139,6 @@
     </ItemGroup>
 
     <ItemGroup>
-        <ProjectReference Include="..\..\..\DrawnUi\src\Maui\DrawnUi\DrawnUi.Maui.csproj" />
         <ProjectReference Include="..\Lib\DrawnUi.Maui.Camera.csproj" />
 	</ItemGroup>
 
