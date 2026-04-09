@@ -323,6 +323,9 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
 
     private SemaphoreSlim _frameSemaphore = new(1, 1);
     private volatile bool _isProcessingFrame = false;
+    private ID3D11Texture2D _cachedReadbackTexture;
+    private D3D11_TEXTURE2D_DESC _cachedReadbackSourceDesc;
+    private bool _hasCachedReadbackSourceDesc;
 
     // Raw frame arrival diagnostics (counts ALL frames before filtering)
     private long _rawFrameCount = 0;
@@ -918,12 +921,53 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
     /// Create optimized SKImage directly from Direct3D surface using Staging texture if needed.
     /// This avoids the overhead of SoftwareBitmap wrapper.
     /// </summary>
+    private static bool MatchesReadbackTexture(in D3D11_TEXTURE2D_DESC cachedDesc, in D3D11_TEXTURE2D_DESC currentDesc)
+    {
+        return cachedDesc.Width == currentDesc.Width
+               && cachedDesc.Height == currentDesc.Height
+               && cachedDesc.MipLevels == currentDesc.MipLevels
+               && cachedDesc.ArraySize == currentDesc.ArraySize
+               && cachedDesc.Format == currentDesc.Format
+               && cachedDesc.SampleDesc.Count == currentDesc.SampleDesc.Count
+               && cachedDesc.SampleDesc.Quality == currentDesc.SampleDesc.Quality;
+    }
+
+    private ID3D11Texture2D GetOrCreateReadbackTexture(ID3D11Device device, in D3D11_TEXTURE2D_DESC sourceDesc)
+    {
+        if (_cachedReadbackTexture != null && _hasCachedReadbackSourceDesc && MatchesReadbackTexture(_cachedReadbackSourceDesc, sourceDesc))
+            return _cachedReadbackTexture;
+
+        ReleaseCachedReadbackTexture();
+
+        var stagingDesc = sourceDesc;
+        stagingDesc.Usage = (uint)D3D11_USAGE.STAGING;
+        stagingDesc.BindFlags = 0;
+        stagingDesc.CPUAccessFlags = (uint)D3D11_CPU_ACCESS_FLAG.READ;
+        stagingDesc.MiscFlags = 0;
+
+        device.CreateTexture2D(ref stagingDesc, IntPtr.Zero, out _cachedReadbackTexture);
+        _cachedReadbackSourceDesc = sourceDesc;
+        _hasCachedReadbackSourceDesc = true;
+
+        return _cachedReadbackTexture;
+    }
+
+    private void ReleaseCachedReadbackTexture()
+    {
+        if (_cachedReadbackTexture != null)
+        {
+            Marshal.ReleaseComObject(_cachedReadbackTexture);
+            _cachedReadbackTexture = null;
+        }
+
+        _hasCachedReadbackSourceDesc = false;
+    }
+
     private SKImage ConvertDirect3DToOptimizedSKImage(Windows.Graphics.DirectX.Direct3D11.IDirect3DSurface d3dSurface)
     {
         ID3D11Texture2D texture = null;
         ID3D11Device device = null;
         ID3D11DeviceContext context = null;
-        ID3D11Texture2D stagingTexture = null;
 
         try
         {
@@ -955,16 +999,19 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
 
             if (useStaging)
             {
-                // Create Staging
-                var stagingDesc = desc;
-                stagingDesc.Usage = (uint)D3D11_USAGE.STAGING;
-                stagingDesc.BindFlags = 0;
-                stagingDesc.CPUAccessFlags = (uint)D3D11_CPU_ACCESS_FLAG.READ;
-                stagingDesc.MiscFlags = 0; // Clear any shared flags
+                var stagingTexture = GetOrCreateReadbackTexture(device, desc);
 
-                device.CreateTexture2D(ref stagingDesc, IntPtr.Zero, out stagingTexture);
+                try
+                {
+                    context.CopyResource((ID3D11Resource)stagingTexture, (ID3D11Resource)texture);
+                }
+                catch
+                {
+                    ReleaseCachedReadbackTexture();
+                    stagingTexture = GetOrCreateReadbackTexture(device, desc);
+                    context.CopyResource((ID3D11Resource)stagingTexture, (ID3D11Resource)texture);
+                }
 
-                context.CopyResource((ID3D11Resource)stagingTexture, (ID3D11Resource)texture);
                 resourceToMap = (ID3D11Resource)stagingTexture;
             }
             else
@@ -990,12 +1037,12 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
         }
         catch (Exception e)
         {
+            ReleaseCachedReadbackTexture();
             Debug.WriteLine($"[NativeCameraWindows] ConvertDirect3DToOptimizedSKImage error: {e}");
             return null;
         }
         finally
         {
-            if (stagingTexture != null) Marshal.ReleaseComObject(stagingTexture);
             if (context != null) Marshal.ReleaseComObject(context);
             if (device != null) Marshal.ReleaseComObject(device);
             if (texture != null) Marshal.ReleaseComObject(texture);
@@ -3133,6 +3180,8 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
                 _preview?.Dispose();
                 _preview = null;
             }
+
+            ReleaseCachedReadbackTexture();
         }
         catch (Exception e)
         {
