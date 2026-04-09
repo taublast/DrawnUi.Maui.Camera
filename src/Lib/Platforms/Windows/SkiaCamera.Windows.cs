@@ -9,6 +9,8 @@ namespace DrawnUi.Camera;
 public partial class SkiaCamera : SkiaControl
 {
     private int _windowsAwaitingPostStopPreviewFrame;
+    private CapturedImage _windowsPendingRecordingFrame;
+    private int _windowsRecordingWorkerActive;
 
     public virtual void SetZoom(double value)
     {
@@ -82,6 +84,170 @@ public partial class SkiaCamera : SkiaControl
         }
 
         System.Threading.Interlocked.Exchange(ref _windowsAwaitingPostStopPreviewFrame, 1);
+    }
+
+    internal void OnWindowsRecordingSourceDrop()
+    {
+        if (!IsRecording && !IsPreRecording)
+            return;
+
+        System.Threading.Interlocked.Increment(ref _diagHardwareDrops);
+    }
+
+    private void ResetWindowsRecordingQueue()
+    {
+        var pending = System.Threading.Interlocked.Exchange(ref _windowsPendingRecordingFrame, null);
+        pending?.Dispose();
+        System.Threading.Interlocked.Exchange(ref _windowsRecordingWorkerActive, 0);
+    }
+
+    private void EnqueueWindowsRecordingFrame(CapturedImage captured)
+    {
+        if (captured?.Image == null)
+        {
+            captured?.Dispose();
+            return;
+        }
+
+        var previous = System.Threading.Interlocked.Exchange(ref _windowsPendingRecordingFrame, captured);
+        if (previous != null)
+        {
+            previous.Dispose();
+            System.Threading.Interlocked.Increment(ref _diagDroppedFrames);
+        }
+
+        if (System.Threading.Interlocked.CompareExchange(ref _windowsRecordingWorkerActive, 1, 0) == 0)
+        {
+            _ = Task.Run(ProcessWindowsRecordingQueueAsync);
+        }
+    }
+
+    private async Task ProcessWindowsRecordingQueueAsync()
+    {
+        try
+        {
+            while (true)
+            {
+                var captured = System.Threading.Interlocked.Exchange(ref _windowsPendingRecordingFrame, null);
+                if (captured == null)
+                    break;
+
+                try
+                {
+                    await ProcessWindowsRecordingFrameAsync(captured);
+                }
+                finally
+                {
+                    captured.Dispose();
+                }
+            }
+        }
+        finally
+        {
+            System.Threading.Interlocked.Exchange(ref _windowsRecordingWorkerActive, 0);
+
+            if (_windowsPendingRecordingFrame != null &&
+                System.Threading.Interlocked.CompareExchange(ref _windowsRecordingWorkerActive, 1, 0) == 0)
+            {
+                _ = Task.Run(ProcessWindowsRecordingQueueAsync);
+            }
+        }
+    }
+
+    private async Task ProcessWindowsRecordingFrameAsync(CapturedImage captured)
+    {
+        if ((!IsPreRecording && !IsRecording) || _captureVideoEncoder is not WindowsCaptureVideoEncoder winEnc)
+            return;
+
+        var srcImg = captured?.Image;
+        if (srcImg == null)
+            return;
+
+        var captureStartUtc = _captureVideoStartTime.Kind == DateTimeKind.Utc
+            ? _captureVideoStartTime
+            : _captureVideoStartTime.ToUniversalTime();
+        var capturedTimeUtc = captured.Time.Kind == DateTimeKind.Utc
+            ? captured.Time
+            : captured.Time.ToUniversalTime();
+        var elapsed = capturedTimeUtc - captureStartUtc;
+        if (elapsed < TimeSpan.Zero)
+            elapsed = TimeSpan.Zero;
+
+        using (winEnc.BeginFrame(elapsed, out var canvas, out var info))
+        {
+            OnRawFrameAcquired(srcImg, DeviceRotation);
+
+            if (canvas == null)
+                return;
+
+            var rects = GetAspectFillRects(srcImg.Width, srcImg.Height, info.Width, info.Height);
+            RenderFrameForRecording(canvas, srcImg, rects.src, rects.dst);
+
+            if (ProcessFrame != null || VideoDiagnosticsOn)
+            {
+                var rotation = GetActiveRecordingRotation();
+                var needsCheckpoint = ProcessFrame != null || (VideoDiagnosticsOn && rotation != 0);
+                var checkpoint = 0;
+
+                if (needsCheckpoint)
+                {
+                    checkpoint = canvas.Save();
+                    ApplyCanvasRotation(canvas, info.Width, info.Height, rotation);
+                }
+
+                if (ProcessFrame != null)
+                {
+                    var (frameWidth, frameHeight) = GetRotatedDimensions(info.Width, info.Height, rotation);
+                    var frame = new DrawableFrame
+                    {
+                        Width = frameWidth,
+                        Height = frameHeight,
+                        Canvas = canvas,
+                        Time = elapsed,
+                        Scale = 1f
+                    };
+                    ProcessFrame.Invoke(frame);
+                }
+
+                if (VideoDiagnosticsOn)
+                    DrawDiagnostics(canvas, info.Width, info.Height);
+
+                if (needsCheckpoint)
+                    canvas.RestoreToCount(checkpoint);
+            }
+
+            _diagSubmitSw.Restart();
+            await winEnc.SubmitFrameAsync();
+            _diagSubmitSw.Stop();
+            _diagLastSubmitMs = _diagSubmitSw.Elapsed.TotalMilliseconds;
+            System.Threading.Interlocked.Increment(ref _diagSubmittedFrames);
+            CalculateRecordingFps();
+        }
+    }
+
+    private async Task WaitForWindowsRecordingQueueAsync(bool dropPendingFrames)
+    {
+        if (dropPendingFrames)
+        {
+            var pending = System.Threading.Interlocked.Exchange(ref _windowsPendingRecordingFrame, null);
+            pending?.Dispose();
+        }
+
+        var retries = 0;
+        while (System.Threading.Volatile.Read(ref _windowsRecordingWorkerActive) != 0 ||
+               (!dropPendingFrames && _windowsPendingRecordingFrame != null))
+        {
+            if (retries++ >= 100)
+                break;
+
+            await Task.Delay(10);
+        }
+
+        if (dropPendingFrames)
+        {
+            var pending = System.Threading.Interlocked.Exchange(ref _windowsPendingRecordingFrame, null);
+            pending?.Dispose();
+        }
     }
 
     public virtual Metadata CreateMetadata()
@@ -649,6 +815,8 @@ public partial class SkiaCamera : SkiaControl
                 winCamCleanup.PreviewCaptureSuccess = null;
             }
 
+            await WaitForWindowsRecordingQueueAsync(dropPendingFrames: false);
+
 
             // Get local reference to encoder before clearing field to prevent disposal race
             encoder = _captureVideoEncoder;
@@ -780,6 +948,8 @@ public partial class SkiaCamera : SkiaControl
                 winCamCleanup.PreviewCaptureSuccess = null;
             }
 
+            await WaitForWindowsRecordingQueueAsync(dropPendingFrames: true);
+
             // Get local reference to encoder before clearing field to prevent disposal race
             encoder = _captureVideoEncoder;
             _captureVideoEncoder = null;
@@ -840,12 +1010,11 @@ public partial class SkiaCamera : SkiaControl
     {
         // Stop preview audio - recording will take over with its own audio capture
         StopPreviewAudioCapture();
+        ResetWindowsRecordingQueue();
 
-        // Create platform-specific encoder with existing GRContext (GPU path)
-        // BUGFIX: Passing GRContext from the UI thread causes freeze/deadlock during window resize because the context 
-        // is destroyed/recreated while the background encoder task is trying to use it. 
-        // Also, since we do CPU readback anyway (ReadPixels), using a GPU surface here is actually slower (upload + readback).
-        // By passing null, we force a CPU-backed surface which is thread-safe and faster for this specific pipeline.
+        // Create platform-specific encoder without borrowing the UI GRContext.
+        // Windows recording composition runs on a background thread with a raster surface,
+        // avoiding ANGLE/GRContext races with the UI render pipeline during resize.
         GRContext grContext = null; // (Superview?.CanvasView as SkiaViewAccelerated)?.GRContext;
         _captureVideoEncoder = new WindowsCaptureVideoEncoder(grContext);
 
@@ -1024,110 +1193,25 @@ public partial class SkiaCamera : SkiaControl
             {
                 CalculateCameraInputFps();
 
-                if ((!IsPreRecording && !IsRecording) || _captureVideoEncoder is not WindowsCaptureVideoEncoder winEnc)
+                if ((!IsPreRecording && !IsRecording) || _captureVideoEncoder is not WindowsCaptureVideoEncoder)
                     return;
 
-                if (System.Threading.Interlocked.CompareExchange(ref _frameInFlight, 1, 0) != 0)
-                {
-                    System.Threading.Interlocked.Increment(ref _diagDroppedFrames);
-                    return;
-                }
-
-                // Make a copy of the image (original may be disposed after callback returns)
                 var srcImg = captured?.Image;
                 if (srcImg == null)
-                {
-                    System.Threading.Interlocked.Exchange(ref _frameInFlight, 0);
                     return;
-                }
 
-                // Create a raster copy that's safe to use on main thread
-                SKImage imgCopy;
-                try
+                captured.Image = null;
+                var queuedFrame = new CapturedImage
                 {
-                    using var bmp = new SKBitmap(srcImg.Width, srcImg.Height);
-                    using var canvas = new SKCanvas(bmp);
-                    canvas.DrawImage(srcImg, 0, 0);
-                    imgCopy = SKImage.FromBitmap(bmp);
-                }
-                catch
-                {
-                    System.Threading.Interlocked.Exchange(ref _frameInFlight, 0);
-                    return;
-                }
+                    Image = srcImg,
+                    Meta = captured.Meta,
+                    Rotation = captured.Rotation,
+                    Facing = captured.Facing,
+                    Time = captured.Time,
+                    Path = captured.Path
+                };
 
-                // Fire ML hook — raw frame before ProcessFrame overlays, synchronous call expected
-                OnRawFrameAcquired(imgCopy, DeviceRotation);
-
-                var elapsed = DateTime.Now - _captureVideoStartTime;
-
-                // GPU surface must be accessed from main thread
-                MainThread.BeginInvokeOnMainThread(async () =>
-                {
-                    try
-                    {
-                        using (imgCopy)
-                        using (winEnc.BeginFrame(elapsed, out var canvas, out var info))
-                        {
-                            if (canvas != null)
-                            {
-                                var rects = GetAspectFillRects(imgCopy.Width, imgCopy.Height, info.Width, info.Height);
-                                //canvas.DrawImage(imgCopy, rects.src, rects.dst);
-                                RenderFrameForRecording(canvas, imgCopy, rects.src, rects.dst);
-
-                                if (ProcessFrame != null || VideoDiagnosticsOn)
-                                {
-                                    var rotation = GetActiveRecordingRotation();
-                                    var needsCheckpoint = ProcessFrame != null || (VideoDiagnosticsOn && rotation != 0);
-                                    var checkpoint = 0;
-
-                                    if (needsCheckpoint)
-                                    {
-                                        // Keep one isolated scope for callback and diagnostics, while avoiding work
-                                        // for diagnostics-only frames when no rotation transform is needed.
-                                        checkpoint = canvas.Save();
-                                        ApplyCanvasRotation(canvas, info.Width, info.Height, rotation);
-                                    }
-
-                                    if (ProcessFrame != null)
-                                    {
-                                        var (frameWidth, frameHeight) = GetRotatedDimensions(info.Width, info.Height, rotation);
-                                        var frame = new DrawableFrame
-                                        {
-                                            Width = frameWidth,
-                                            Height = frameHeight,
-                                            Canvas = canvas,
-                                            Time = elapsed,
-                                            Scale = 1f
-                                        };
-                                        ProcessFrame.Invoke(frame);
-                                    }
-
-                                    if (VideoDiagnosticsOn)
-                                        DrawDiagnostics(canvas, info.Width, info.Height);
-
-                                    if (needsCheckpoint)
-                                        canvas.RestoreToCount(checkpoint);
-                                }
-
-                                var sw = System.Diagnostics.Stopwatch.StartNew();
-                                await winEnc.SubmitFrameAsync();
-                                sw.Stop();
-                                _diagLastSubmitMs = sw.Elapsed.TotalMilliseconds;
-                                System.Threading.Interlocked.Increment(ref _diagSubmittedFrames);
-                                CalculateRecordingFps();
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"[Windows CaptureFrame] Error: {ex.Message}");
-                    }
-                    finally
-                    {
-                        System.Threading.Interlocked.Exchange(ref _frameInFlight, 0);
-                    }
-                });
+                EnqueueWindowsRecordingFrame(queuedFrame);
             };
         }
     }

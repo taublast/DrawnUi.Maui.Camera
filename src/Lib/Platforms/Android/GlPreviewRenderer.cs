@@ -52,6 +52,8 @@ namespace DrawnUi.Camera
         private System.Threading.ManualResetEventSlim _frameSignal;
         private volatile bool _stopThread;
         private volatile bool _running;
+        private int _postResetFramesToIgnore;
+        private bool _hasDeliveredPreviewFrame;
 
         // Preview delivery — event consumer owns the SKImage lifecycle
 
@@ -86,6 +88,12 @@ namespace DrawnUi.Camera
         public event Action<SKImage, long> PreviewFrameReady;
 
         /// <summary>
+        /// Number of preview frame hits to ignore after ResetPreviewBuffers().
+        /// Use this to drain stale native/SurfaceTexture queue contents before delivering preview again.
+        /// </summary>
+        public static int PreviewFramesToIgnoreAfterReset { get; set; } = 5;
+
+        /// <summary>
         /// Optional pull-driven gate. When provided and returns false, the current camera frame is
         /// consumed but no preview image is rendered or read back.
         /// </summary>
@@ -94,6 +102,51 @@ namespace DrawnUi.Camera
         public bool IsInitialized => _initialized;
         public int PreviewWidth => _previewWidth;
         public int PreviewHeight => _previewHeight;
+
+        public bool ResetPreviewBuffers()
+        {
+            if (!_initialized || _disposed)
+                return false;
+
+            if (_running)
+            {
+                System.Diagnostics.Debug.WriteLine("[GlPreviewRenderer] ResetPreviewBuffers skipped: renderer is running");
+                return false;
+            }
+
+            bool resetSuccess = false;
+            var resetDone = new System.Threading.ManualResetEventSlim(false);
+
+            var resetThread = new System.Threading.Thread(() =>
+            {
+                try
+                {
+                    MakeCurrent();
+                    ReleasePreviewBuffers();
+                    _postResetFramesToIgnore = _hasDeliveredPreviewFrame
+                        ? Math.Max(0, PreviewFramesToIgnoreAfterReset)
+                        : 0;
+                    UnbindCurrent();
+                    resetSuccess = true;
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[GlPreviewRenderer] ResetPreviewBuffers error: {ex.Message}");
+                }
+                finally
+                {
+                    resetDone.Set();
+                }
+            })
+            {
+                IsBackground = true,
+                Name = "GlPreviewReset"
+            };
+
+            resetThread.Start();
+            resetDone.Wait(5000);
+            return resetSuccess;
+        }
 
         /// <summary>
         /// Initialize the GPU preview renderer. Creates EGL context, SurfaceTexture, and readback FBO.
@@ -336,8 +389,16 @@ namespace DrawnUi.Camera
             if (!_gpuFrameProvider.TryProcessFrameNoWait(out long timestampNs))
                 return;
 
+            if (_postResetFramesToIgnore > 0)
+            {
+                _postResetFramesToIgnore--;
+                return;
+            }
+
             if (ShouldGeneratePreviewFrame != null && !ShouldGeneratePreviewFrame())
                 return;
+
+            EnsurePreviewBuffersReady();
 
             // 3. Reset GL state to clean defaults
             GLES20.GlUseProgram(0);
@@ -368,6 +429,7 @@ namespace DrawnUi.Camera
             // frames before the UI thread could display them.
             if (image != null)
             {
+                _hasDeliveredPreviewFrame = true;
                 PreviewFrameReady?.Invoke(image, timestampNs);
             }
         }
@@ -505,6 +567,66 @@ namespace DrawnUi.Camera
         #endregion
 
         #region GL Resources
+
+        private void EnsurePreviewBuffersReady()
+        {
+            if (_readbackFbo == 0)
+            {
+                SetupReadbackFbo(_previewWidth, _previewHeight);
+            }
+
+            if (UseBlitPreview && _sourceFbo == 0)
+            {
+                SetupSourceFbo(_cameraWidth, _cameraHeight);
+            }
+
+            if (!_pbosInitialized)
+            {
+                SetupPbos(_previewWidth, _previewHeight);
+            }
+
+            if (_imagePool == null)
+            {
+                _imagePool = new SkiaCpuImagePool(_previewWidth, _previewHeight);
+            }
+
+            if (!UseBlitPreview && _flipRowBuffer == null)
+            {
+                _flipRowBuffer = new byte[_previewWidth * 4];
+            }
+        }
+
+        private void ReleasePreviewBuffers()
+        {
+            if (_readbackFbo != 0)
+            {
+                GLES20.GlDeleteFramebuffers(1, new int[] { _readbackFbo }, 0);
+                _readbackFbo = 0;
+            }
+            if (_readbackRbo != 0)
+            {
+                GLES20.GlDeleteRenderbuffers(1, new int[] { _readbackRbo }, 0);
+                _readbackRbo = 0;
+            }
+            if (_sourceFbo != 0)
+            {
+                GLES20.GlDeleteFramebuffers(1, new int[] { _sourceFbo }, 0);
+                _sourceFbo = 0;
+            }
+            if (_sourceRbo != 0)
+            {
+                GLES20.GlDeleteRenderbuffers(1, new int[] { _sourceRbo }, 0);
+                _sourceRbo = 0;
+            }
+
+            DisposePbos();
+
+            _currentPbo = 0;
+            _firstPboFrame = true;
+            _flipRowBuffer = null;
+            _imagePool?.Dispose();
+            _imagePool = null;
+        }
 
         /// <summary>
         /// Create FBO + renderbuffer at preview resolution for readback.
@@ -666,10 +788,6 @@ namespace DrawnUi.Camera
             _gpuFrameProvider?.Dispose();
             _gpuFrameProvider = null;
 
-            _flipRowBuffer = null;
-            _imagePool?.Dispose();
-            _imagePool = null;
-
             // GL resources must be cleaned up with EGL context current
             // If we can't make current, skip GL cleanup (context may already be destroyed)
             bool canCleanupGl = false;
@@ -687,32 +805,18 @@ namespace DrawnUi.Camera
             {
                 try
                 {
-                    if (_readbackFbo != 0)
-                    {
-                        GLES20.GlDeleteFramebuffers(1, new int[] { _readbackFbo }, 0);
-                        _readbackFbo = 0;
-                    }
-                    if (_readbackRbo != 0)
-                    {
-                        GLES20.GlDeleteRenderbuffers(1, new int[] { _readbackRbo }, 0);
-                        _readbackRbo = 0;
-                    }
-                    if (_sourceFbo != 0)
-                    {
-                        GLES20.GlDeleteFramebuffers(1, new int[] { _sourceFbo }, 0);
-                        _sourceFbo = 0;
-                    }
-                    if (_sourceRbo != 0)
-                    {
-                        GLES20.GlDeleteRenderbuffers(1, new int[] { _sourceRbo }, 0);
-                        _sourceRbo = 0;
-                    }
-                    DisposePbos();
+                    ReleasePreviewBuffers();
                 }
                 catch (Exception ex)
                 {
                     System.Diagnostics.Debug.WriteLine($"[GlPreviewRenderer] GL cleanup error: {ex.Message}");
                 }
+            }
+            else
+            {
+                _flipRowBuffer = null;
+                _imagePool?.Dispose();
+                _imagePool = null;
             }
 
             // Destroy EGL resources

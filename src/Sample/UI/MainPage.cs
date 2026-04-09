@@ -23,8 +23,11 @@ public partial class MainPage : BasePageReloadable, IDisposable
     private SkiaLabel _statusLabel;
     private SkiaLayer _headerPanel;
     private SkiaLayout _cameraControlsPanel;
-    private SkiaShape _recordingStopButton;
-    private SkiaLabel _recordingStopLabel;
+    private SkiaLayout _recordingStopStartButtons;
+    private SkiaShape _recordingCancelButton;
+    private SkiaShape _recordingActionButton;
+    private SkiaShape _recordingActionIcon;
+    private SkiaLabel _recordingActionLabel;
     private SettingsButton _videoRecordButton;
     private SettingsButton _speechButton;
     private IRealtimeTranscriptionService _realtimeTranscriptionService;
@@ -559,16 +562,52 @@ public partial class MainPage : BasePageReloadable, IDisposable
                 _cameraControlsPanel.IsVisible = showAppUi;
             }
 
-            if (_recordingStopButton != null)
+            if (_recordingStopStartButtons != null)
             {
-                _recordingStopButton.IsVisible = isRecordingVideo;
+                _recordingStopStartButtons.IsVisible = isRecordingVideo;
             }
 
-            if (_recordingStopLabel != null && !isRecordingVideo)
-            {
-                _recordingStopLabel.Text = "Stop";
-            }
+            UpdateRecordingOverlayActions();
         });
+    }
+
+    private void UpdateRecordingOverlayActions()
+    {
+        if (CameraControl == null)
+            return;
+
+        bool isPreRecording = CameraControl.CaptureMode == CaptureModeType.Video && CameraControl.IsPreRecording;
+        bool isRecording = CameraControl.CaptureMode == CaptureModeType.Video && CameraControl.IsRecording;
+
+        if (_recordingCancelButton != null)
+        {
+            _recordingCancelButton.IsVisible = isPreRecording;
+        }
+
+        if (_recordingActionButton != null)
+        {
+            _recordingActionButton.IsVisible = isPreRecording || isRecording;
+            _recordingActionButton.StrokeColor = isPreRecording
+                ? Color.FromArgb("#664ADE80")
+                : Color.FromArgb("#66FF7A7A");
+            _recordingActionButton.BackgroundColor = isPreRecording
+                ? Color.FromArgb("#E5122A1E")
+                : Color.FromArgb("#E5162230");
+        }
+
+        if (_recordingActionIcon != null)
+        {
+            _recordingActionIcon.Type = isRecording ? ShapeType.Rectangle : ShapeType.Circle;
+            _recordingActionIcon.CornerRadius = isRecording ? 3 : 7;
+            _recordingActionIcon.BackgroundColor = isRecording
+                ? Color.FromArgb("#FF4D4F")
+                : Color.FromArgb("#22C55E");
+        }
+
+        if (_recordingActionLabel != null)
+        {
+            _recordingActionLabel.Text = isRecording ? "Stop" : "Start";
+        }
     }
 
     private void StartTranscription()
@@ -971,9 +1010,9 @@ public partial class MainPage : BasePageReloadable, IDisposable
             _videoRecordButton.Text = $"Stop ({duration:mm\\:ss})";
         }
 
-        if (_recordingStopLabel != null && CameraControl.IsRecording)
+        if (_recordingActionLabel != null && CameraControl.IsRecording)
         {
-            _recordingStopLabel.Text = $"Stop ({duration:mm\\:ss})";
+            _recordingActionLabel.Text = $"Stop ({duration:mm\\:ss})";
         }
     }
 

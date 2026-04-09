@@ -810,6 +810,22 @@ public partial class NativeCamera : Java.Lang.Object, ImageReader.IOnImageAvaila
         }
     }
 
+    internal void ClearBufferedPreviewFrame()
+    {
+        lock (_lockPreview)
+        {
+            var preview = _preview;
+            _preview = null;
+            preview?.Dispose();
+        }
+    }
+
+    internal void ResetGlPreviewBuffers()
+    {
+        ClearBufferedPreviewFrame();
+        _glPreviewRenderer?.ResetPreviewBuffers();
+    }
+
     public void Start()
     {
         try

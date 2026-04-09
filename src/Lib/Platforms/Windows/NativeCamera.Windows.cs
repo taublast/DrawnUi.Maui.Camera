@@ -299,6 +299,7 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
     private double _zoomScale = 1.0;
     private readonly object _lockPreview = new();
     private volatile CapturedImage _preview;
+    private DateTime _nextMetadataRefreshUtc = DateTime.MinValue;
     private DeviceInformation _cameraDevice;
     private MediaFrameSource _frameSource;
     FlashMode _flashMode = FlashMode.Off;
@@ -323,6 +324,9 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
 
     private SemaphoreSlim _frameSemaphore = new(1, 1);
     private volatile bool _isProcessingFrame = false;
+    private ID3D11Texture2D _cachedReadbackTexture;
+    private D3D11_TEXTURE2D_DESC _cachedReadbackSourceDesc;
+    private bool _hasCachedReadbackSourceDesc;
 
     // Raw frame arrival diagnostics (counts ALL frames before filtering)
     private long _rawFrameCount = 0;
@@ -918,12 +922,53 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
     /// Create optimized SKImage directly from Direct3D surface using Staging texture if needed.
     /// This avoids the overhead of SoftwareBitmap wrapper.
     /// </summary>
+    private static bool MatchesReadbackTexture(in D3D11_TEXTURE2D_DESC cachedDesc, in D3D11_TEXTURE2D_DESC currentDesc)
+    {
+        return cachedDesc.Width == currentDesc.Width
+               && cachedDesc.Height == currentDesc.Height
+               && cachedDesc.MipLevels == currentDesc.MipLevels
+               && cachedDesc.ArraySize == currentDesc.ArraySize
+               && cachedDesc.Format == currentDesc.Format
+               && cachedDesc.SampleDesc.Count == currentDesc.SampleDesc.Count
+               && cachedDesc.SampleDesc.Quality == currentDesc.SampleDesc.Quality;
+    }
+
+    private ID3D11Texture2D GetOrCreateReadbackTexture(ID3D11Device device, in D3D11_TEXTURE2D_DESC sourceDesc)
+    {
+        if (_cachedReadbackTexture != null && _hasCachedReadbackSourceDesc && MatchesReadbackTexture(_cachedReadbackSourceDesc, sourceDesc))
+            return _cachedReadbackTexture;
+
+        ReleaseCachedReadbackTexture();
+
+        var stagingDesc = sourceDesc;
+        stagingDesc.Usage = (uint)D3D11_USAGE.STAGING;
+        stagingDesc.BindFlags = 0;
+        stagingDesc.CPUAccessFlags = (uint)D3D11_CPU_ACCESS_FLAG.READ;
+        stagingDesc.MiscFlags = 0;
+
+        device.CreateTexture2D(ref stagingDesc, IntPtr.Zero, out _cachedReadbackTexture);
+        _cachedReadbackSourceDesc = sourceDesc;
+        _hasCachedReadbackSourceDesc = true;
+
+        return _cachedReadbackTexture;
+    }
+
+    private void ReleaseCachedReadbackTexture()
+    {
+        if (_cachedReadbackTexture != null)
+        {
+            Marshal.ReleaseComObject(_cachedReadbackTexture);
+            _cachedReadbackTexture = null;
+        }
+
+        _hasCachedReadbackSourceDesc = false;
+    }
+
     private SKImage ConvertDirect3DToOptimizedSKImage(Windows.Graphics.DirectX.Direct3D11.IDirect3DSurface d3dSurface)
     {
         ID3D11Texture2D texture = null;
         ID3D11Device device = null;
         ID3D11DeviceContext context = null;
-        ID3D11Texture2D stagingTexture = null;
 
         try
         {
@@ -955,16 +1000,19 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
 
             if (useStaging)
             {
-                // Create Staging
-                var stagingDesc = desc;
-                stagingDesc.Usage = (uint)D3D11_USAGE.STAGING;
-                stagingDesc.BindFlags = 0;
-                stagingDesc.CPUAccessFlags = (uint)D3D11_CPU_ACCESS_FLAG.READ;
-                stagingDesc.MiscFlags = 0; // Clear any shared flags
+                var stagingTexture = GetOrCreateReadbackTexture(device, desc);
 
-                device.CreateTexture2D(ref stagingDesc, IntPtr.Zero, out stagingTexture);
+                try
+                {
+                    context.CopyResource((ID3D11Resource)stagingTexture, (ID3D11Resource)texture);
+                }
+                catch
+                {
+                    ReleaseCachedReadbackTexture();
+                    stagingTexture = GetOrCreateReadbackTexture(device, desc);
+                    context.CopyResource((ID3D11Resource)stagingTexture, (ID3D11Resource)texture);
+                }
 
-                context.CopyResource((ID3D11Resource)stagingTexture, (ID3D11Resource)texture);
                 resourceToMap = (ID3D11Resource)stagingTexture;
             }
             else
@@ -990,12 +1038,12 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
         }
         catch (Exception e)
         {
+            ReleaseCachedReadbackTexture();
             Debug.WriteLine($"[NativeCameraWindows] ConvertDirect3DToOptimizedSKImage error: {e}");
             return null;
         }
         finally
         {
-            if (stagingTexture != null) Marshal.ReleaseComObject(stagingTexture);
             if (context != null) Marshal.ReleaseComObject(context);
             if (device != null) Marshal.ReleaseComObject(device);
             if (texture != null) Marshal.ReleaseComObject(texture);
@@ -1016,7 +1064,10 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
     private async void ProcessDirect3DFrameAsync(Windows.Graphics.DirectX.Direct3D11.IDirect3DSurface d3dSurface)
     {
         if (!await _frameSemaphore.WaitAsync(1)) // Skip if busy processing
+        {
+            FormsControl?.OnWindowsRecordingSourceDrop();
             return;
+        }
 
         _isProcessingFrame = true;
         CapturedImage capturedImage = null;
@@ -1061,27 +1112,10 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
         finally
         {
             _isProcessingFrame = false;
-            // Update preview safely
-            lock (_lockPreview)
-            {
-                _preview?.Dispose(); // Only dispose old preview, not the new SKImage
-                _preview = capturedImage;
-                if (capturedImage != null)
-                {
-                    // Update camera metadata with current exposure settings
-                    UpdateCameraMetadata();
-
-                    // Invoke capture callback for encoder (same pattern as Android)
-                    PreviewCaptureSuccess?.Invoke(capturedImage);
-
-                    FormsControl.OnWindowsNativePreviewFrameBuffered();
-
-                    //PREVIEW FRAME READY
-                    FormsControl.UpdatePreview();
-                }
-                _frameSemaphore?.Release();
-            }
+            _frameSemaphore?.Release();
         }
+
+        DeliverCapturedFrame(capturedImage);
     }
 
     /// <summary>
@@ -1110,7 +1144,13 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
         }
 
         // Skip if already processing a frame to prevent backlog
-        if (_isProcessingFrame || withError==sender)
+        if (_isProcessingFrame)
+        {
+            FormsControl?.OnWindowsRecordingSourceDrop();
+            return;
+        }
+
+        if (withError==sender)
             return;
 
         if (!ShouldGeneratePreviewFrame())
@@ -1173,9 +1213,13 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
     private async void ProcessFrameAsync(SoftwareBitmap softwareBitmap)
     {
         if (!await _frameSemaphore.WaitAsync(1)) // Skip if busy processing
+        {
+            FormsControl?.OnWindowsRecordingSourceDrop();
             return;
+        }
 
         _isProcessingFrame = true;
+        CapturedImage capturedImage = null;
 
         try
         {
@@ -1192,7 +1236,7 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
                 var rotation = FormsControl.DeviceRotation;
                 Metadata.ApplyRotation(meta, rotation);
 
-                var capturedImage = new CapturedImage()
+                capturedImage = new CapturedImage()
                 {
                     Facing = FormsControl.CameraDevice?.Position ?? FormsControl.Facing,
                     Time = DateTime.UtcNow,
@@ -1200,24 +1244,6 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
                     Meta = meta,
                     Rotation = rotation
                 };
-
-                // Update preview safely
-                lock (_lockPreview)
-                {
-                    _preview?.Dispose(); // Only dispose old preview, not the new SKImage
-                    _preview = capturedImage;
-                }
-
-                // Update camera metadata with current exposure settings
-                UpdateCameraMetadata();
-
-                // Invoke capture callback for encoder (same pattern as Android)
-                PreviewCaptureSuccess?.Invoke(capturedImage);
-
-                FormsControl.OnWindowsNativePreviewFrameBuffered();
-
-                //PREVIEW FRAME READY
-                FormsControl.UpdatePreview();
             }
         }
         catch (Exception e)
@@ -1228,6 +1254,49 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
         {
             _isProcessingFrame = false;
             _frameSemaphore?.Release();
+        }
+
+        DeliverCapturedFrame(capturedImage);
+    }
+
+    private void DeliverCapturedFrame(CapturedImage capturedImage)
+    {
+        if (capturedImage == null)
+            return;
+
+        bool useEncoderMirroredPreview = FormsControl.UseRecordingFramesForPreview && (FormsControl.IsRecording || FormsControl.IsPreRecording);
+
+        if (!useEncoderMirroredPreview)
+        {
+            lock (_lockPreview)
+            {
+                _preview?.Dispose();
+                _preview = capturedImage;
+            }
+        }
+
+        try
+        {
+            UpdateCameraMetadata();
+
+            // Recording uses the raw frame synchronously from this callback, but no longer
+            // holds the frame-processing semaphore while the encoder path runs.
+            PreviewCaptureSuccess?.Invoke(capturedImage);
+
+            if (useEncoderMirroredPreview)
+            {
+                return;
+            }
+
+            FormsControl.OnWindowsNativePreviewFrameBuffered();
+            FormsControl.UpdatePreview();
+        }
+        finally
+        {
+            if (useEncoderMirroredPreview)
+            {
+                capturedImage.Dispose();
+            }
         }
     }
 
@@ -1880,6 +1949,14 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
         {
             if (_mediaCapture?.VideoDeviceController == null || FormsControl?.CameraDevice?.Meta == null)
                 return;
+
+            var now = DateTime.UtcNow;
+            if (now < _nextMetadataRefreshUtc)
+                return;
+
+            _nextMetadataRefreshUtc = now + (FormsControl.IsRecording || FormsControl.IsPreRecording
+                ? TimeSpan.FromMilliseconds(500)
+                : TimeSpan.FromMilliseconds(200));
 
             var controller = _mediaCapture.VideoDeviceController;
             var meta = FormsControl.CameraDevice.Meta;
@@ -3112,6 +3189,8 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
                 _preview?.Dispose();
                 _preview = null;
             }
+
+            ReleaseCachedReadbackTexture();
         }
         catch (Exception e)
         {

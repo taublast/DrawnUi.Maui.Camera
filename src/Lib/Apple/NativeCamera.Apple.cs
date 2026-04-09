@@ -1951,6 +1951,29 @@ public partial class NativeCamera : NSObject, IDisposable, INativeCamera, INotif
         }
     }
 
+    internal void ClearBufferedPreviewFrame()
+    {
+        lock (_lockPreview)
+        {
+            var preview = _preview;
+            _preview = null;
+            preview?.Dispose();
+
+            _kill?.Dispose();
+            _kill = null;
+        }
+
+        lock (_lockRawFrame)
+        {
+            if (_latestRawFrame != null)
+            {
+                _latestRawFrame.PixelData = null;
+                _rawFrameDataPool.Enqueue(_latestRawFrame);
+                _latestRawFrame = null;
+            }
+        }
+    }
+
     private bool ShouldGeneratePreviewFrame()
     {
         return true;
@@ -2643,6 +2666,12 @@ public partial class NativeCamera : NSObject, IDisposable, INativeCamera, INotif
                         _hasNewRecordingFrame = true;
                         Monitor.Pulse(_lockRecordingSignal);
                     }
+
+                    // During recording the encoder generates its own preview via
+                    // TryAcquirePreviewImage — skip the native GPU→CPU readback here
+                    // to avoid a redundant full-/scaled-res texture.GetBytes() per frame.
+                    // This eliminates one entire GPU→CPU round-trip and cuts thermal load.
+                    continue;
                 }
 
                 if (!ShouldGeneratePreviewFrame())

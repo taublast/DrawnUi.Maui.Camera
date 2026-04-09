@@ -173,10 +173,11 @@ public class WindowsCaptureVideoEncoder : ICaptureVideoEncoder
     private TimeSpan _preRecordDurationLimit; // Limit for clamping offset (matches PreRecordDuration property)
     private bool _encodingDurationSetFromFrames = false;
 
-    // GPU composition fields (temporary bridge until full Media Foundation path is implemented)
-    private GRContext _grContext;                 // Provided by DrawnUi accelerated surface
+    // Composition surface for recording. This is raster by default on Windows to avoid
+    // ANGLE/GRContext lifetime races with the UI render pipeline during resize.
+    private GRContext _grContext;
     public GRContext Context => _grContext;
-    private SKSurface _gpuSurface;                // Encoder-owned GPU surface to draw overlays
+    private SKSurface _gpuSurface;
     private SKImageInfo _gpuInfo;                 // Matches encoder dimensions
     private readonly object _frameLock = new();   // Protects Begin/Submit sequence
     private TimeSpan _pendingTimestamp;
@@ -408,19 +409,7 @@ public class WindowsCaptureVideoEncoder : ICaptureVideoEncoder
         {
             _pendingTimestamp = timestamp;
 
-            if (_gpuSurface == null)
-            {
-                // Ensure we have image info
-                if (_gpuInfo.Width != _width || _gpuInfo.Height != _height || _gpuInfo.ColorType == SKColorType.Unknown)
-                {
-                    _gpuInfo = new SKImageInfo(_width, _height, SKColorType.Bgra8888, SKAlphaType.Premul);
-                }
-
-                // Try to create a GPU-backed surface; fallback to CPU surface if no GRContext (debug only)
-                _gpuSurface = _grContext != null
-                    ? SKSurface.Create(_grContext, true, _gpuInfo)
-                    : SKSurface.Create(_gpuInfo);
-            }
+            EnsureGpuSurfaceLocked();
 
             if (_gpuSurface != null)
             {
@@ -464,6 +453,7 @@ public class WindowsCaptureVideoEncoder : ICaptureVideoEncoder
                     return;
 
                 _gpuSurface.Canvas.Flush();
+                Context?.Flush();
 
                 // Downscale the processed GPU frame for preview (same optimization as Apple encoder)
                 using var gpuSnap = _gpuSurface.Snapshot();
@@ -985,12 +975,7 @@ public class WindowsCaptureVideoEncoder : ICaptureVideoEncoder
             _latestPreviewImage?.Dispose();
             _latestPreviewImage = null;
         }
-        _readbackBitmap?.Dispose();
-        _readbackBitmap = null;
-        _previewSurface?.Dispose();
-        _previewSurface = null;
-        _gpuSurface?.Dispose();
-        _gpuSurface = null;
+        ReleaseGpuResources();
     }
 
     public async Task<CapturedVideo> StopAsync()
@@ -2859,6 +2844,8 @@ public class WindowsCaptureVideoEncoder : ICaptureVideoEncoder
         // Clean up pre-recording temp files
         CleanupPreRecTempFiles();
 
+        ReleaseGpuResources();
+
         if (_frames != null)
         {
             foreach (var frame in _frames)
@@ -2870,5 +2857,36 @@ public class WindowsCaptureVideoEncoder : ICaptureVideoEncoder
         }
 
         _outputFile = null; // Clear reference to prevent access after disposal
+    }
+
+    private void EnsureGpuSurfaceLocked()
+    {
+        if (_gpuInfo.Width != _width || _gpuInfo.Height != _height || _gpuInfo.ColorType == SKColorType.Unknown)
+        {
+            _gpuInfo = new SKImageInfo(_width, _height, SKColorType.Bgra8888, SKAlphaType.Premul);
+            _gpuSurface?.Dispose();
+            _gpuSurface = null;
+        }
+
+        if (_gpuSurface == null)
+        {
+            _gpuSurface = _grContext != null
+                ? SKSurface.Create(_grContext, true, _gpuInfo)
+                : SKSurface.Create(_gpuInfo);
+        }
+    }
+
+    private void ReleaseGpuResources()
+    {
+        _readbackBitmap?.Dispose();
+        _readbackBitmap = null;
+
+        _previewSurface?.Dispose();
+        _previewSurface = null;
+        _previewSurfaceInfo = default;
+
+        _gpuSurface?.Dispose();
+        _gpuSurface = null;
+        _gpuInfo = default;
     }
 }

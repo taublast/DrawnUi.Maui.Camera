@@ -12,7 +12,7 @@ namespace CameraTests
         public static readonly string Album = "SkiaCamera";
         public static readonly string ShaderRemoveCaption = @"Shaders\dissolve_light.sksl";
         
-        public static readonly bool ShowDebug = false;
+        public static readonly bool ShowDebug = true;
 
         public static MauiApp CreateMauiApp()
         {
