@@ -299,6 +299,7 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
     private double _zoomScale = 1.0;
     private readonly object _lockPreview = new();
     private volatile CapturedImage _preview;
+    private DateTime _nextMetadataRefreshUtc = DateTime.MinValue;
     private DeviceInformation _cameraDevice;
     private MediaFrameSource _frameSource;
     FlashMode _flashMode = FlashMode.Off;
@@ -1948,6 +1949,14 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
         {
             if (_mediaCapture?.VideoDeviceController == null || FormsControl?.CameraDevice?.Meta == null)
                 return;
+
+            var now = DateTime.UtcNow;
+            if (now < _nextMetadataRefreshUtc)
+                return;
+
+            _nextMetadataRefreshUtc = now + (FormsControl.IsRecording || FormsControl.IsPreRecording
+                ? TimeSpan.FromMilliseconds(500)
+                : TimeSpan.FromMilliseconds(200));
 
             var controller = _mediaCapture.VideoDeviceController;
             var meta = FormsControl.CameraDevice.Meta;
