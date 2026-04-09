@@ -10,6 +10,9 @@ public partial class SkiaCamera
 {
     private int _androidAwaitingPostStopPreviewFrame;
 
+    internal bool IsAwaitingFreshPreviewAfterRecordingStop =>
+        System.Threading.Volatile.Read(ref _androidAwaitingPostStopPreviewFrame) != 0;
+
     /// <summary>
     /// Pre-allocated shared buffer for pre-recording.
     /// Allocated once when EnablePreRecording=true, reused across recording sessions.
@@ -845,13 +848,6 @@ public partial class SkiaCamera
 
         FrameAquired = false;
 
-        if (androidCam.HasBufferedPreviewFrame())
-        {
-            System.Threading.Interlocked.Exchange(ref _androidAwaitingPostStopPreviewFrame, 0);
-            SafeAction(() => UpdatePreview());
-            return;
-        }
-
         System.Threading.Interlocked.Exchange(ref _androidAwaitingPostStopPreviewFrame, 1);
     }
 
@@ -923,6 +919,7 @@ public partial class SkiaCamera
             // Revert to normal preview session if GPU path was active
             if (NativeControl is NativeCamera camForGpuCleanup)
             {
+                camForGpuCleanup.ResetGlPreviewBuffers();
                 camForGpuCleanup.StopGpuCameraSession();
             }
 
@@ -1011,8 +1008,7 @@ public partial class SkiaCamera
                 OnRecordingSuccess(capturedVideo);
             }
 
-            // Update state and notify success
-            SetIsRecordingVideo(false);
+            // Update state after the preview gate is armed in finally
             shouldResumePreview = true;
 
             IsBusy = false; // Release busy state after successful processing
@@ -1030,7 +1026,6 @@ public partial class SkiaCamera
             _frameCaptureTimer = null;
             _captureVideoEncoder = null;
 
-            SetIsRecordingVideo(false);
             shouldResumePreview = true;
             IsBusy = false; // Release busy state on error
 
@@ -1051,6 +1046,7 @@ public partial class SkiaCamera
             if (shouldResumePreview)
             {
                 ResumeAndroidPreviewAfterStop();
+                SetIsRecordingVideo(false);
             }
         }
     }
@@ -1114,6 +1110,7 @@ public partial class SkiaCamera
             // Revert to normal preview session if GPU path was active
             if (NativeControl is NativeCamera camForGpuCleanup)
             {
+                camForGpuCleanup.ResetGlPreviewBuffers();
                 camForGpuCleanup.StopGpuCameraSession();
             }
 
@@ -1136,7 +1133,6 @@ public partial class SkiaCamera
 
             ClearPreRecordingBuffer();
 
-            SetIsRecordingVideo(false);
             shouldResumePreview = true;
 
             // Restart preview audio if still enabled
@@ -1152,7 +1148,6 @@ public partial class SkiaCamera
             _frameCaptureTimer = null;
             _captureVideoEncoder = null;
 
-            SetIsRecordingVideo(false);
             shouldResumePreview = true;
 
             // Restart preview audio if still enabled
@@ -1172,6 +1167,7 @@ public partial class SkiaCamera
             if (shouldResumePreview)
             {
                 ResumeAndroidPreviewAfterStop();
+                SetIsRecordingVideo(false);
             }
         }
     }

@@ -1486,11 +1486,11 @@ public partial class SkiaCamera : SkiaControl
             catch
             {
             }
-
-            UseRecordingFramesForPreview = false;
 #endif
 
+#if !ANDROID
             SetIsRecordingVideo(false);
+#endif
 
 #if ONPLATFORM
             try
@@ -3427,6 +3427,11 @@ public partial class SkiaCamera : SkiaControl
             if (droidEnc.TryAcquirePreviewImage(out var img) && img != null)
                 return img; // renderer takes ownership and must dispose
             return null; // no fallback to raw preview during recording
+        }
+
+        if (IsAwaitingFreshPreviewAfterRecordingStop)
+        {
+            return null;
         }
 #elif IOS || MACCATALYST
         // While recording on Apple, mirror the composed encoder frames into the preview
