@@ -1016,7 +1016,10 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
     private async void ProcessDirect3DFrameAsync(Windows.Graphics.DirectX.Direct3D11.IDirect3DSurface d3dSurface)
     {
         if (!await _frameSemaphore.WaitAsync(1)) // Skip if busy processing
+        {
+            FormsControl?.OnWindowsRecordingSourceDrop();
             return;
+        }
 
         _isProcessingFrame = true;
         CapturedImage capturedImage = null;
@@ -1061,15 +1064,10 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
         finally
         {
             _isProcessingFrame = false;
-            try
-            {
-                DeliverCapturedFrame(capturedImage);
-            }
-            finally
-            {
-                _frameSemaphore?.Release();
-            }
+            _frameSemaphore?.Release();
         }
+
+        DeliverCapturedFrame(capturedImage);
     }
 
     /// <summary>
@@ -1098,7 +1096,13 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
         }
 
         // Skip if already processing a frame to prevent backlog
-        if (_isProcessingFrame || withError==sender)
+        if (_isProcessingFrame)
+        {
+            FormsControl?.OnWindowsRecordingSourceDrop();
+            return;
+        }
+
+        if (withError==sender)
             return;
 
         if (!ShouldGeneratePreviewFrame())
@@ -1161,9 +1165,13 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
     private async void ProcessFrameAsync(SoftwareBitmap softwareBitmap)
     {
         if (!await _frameSemaphore.WaitAsync(1)) // Skip if busy processing
+        {
+            FormsControl?.OnWindowsRecordingSourceDrop();
             return;
+        }
 
         _isProcessingFrame = true;
+        CapturedImage capturedImage = null;
 
         try
         {
@@ -1180,7 +1188,7 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
                 var rotation = FormsControl.DeviceRotation;
                 Metadata.ApplyRotation(meta, rotation);
 
-                var capturedImage = new CapturedImage()
+                capturedImage = new CapturedImage()
                 {
                     Facing = FormsControl.CameraDevice?.Position ?? FormsControl.Facing,
                     Time = DateTime.UtcNow,
@@ -1188,8 +1196,6 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
                     Meta = meta,
                     Rotation = rotation
                 };
-
-                DeliverCapturedFrame(capturedImage);
             }
         }
         catch (Exception e)
@@ -1201,6 +1207,8 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
             _isProcessingFrame = false;
             _frameSemaphore?.Release();
         }
+
+        DeliverCapturedFrame(capturedImage);
     }
 
     private void DeliverCapturedFrame(CapturedImage capturedImage)
@@ -1223,7 +1231,8 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
         {
             UpdateCameraMetadata();
 
-            // Recording uses the raw frame synchronously from this callback.
+            // Recording uses the raw frame synchronously from this callback, but no longer
+            // holds the frame-processing semaphore while the encoder path runs.
             PreviewCaptureSuccess?.Invoke(capturedImage);
 
             if (useEncoderMirroredPreview)

@@ -84,6 +84,14 @@ public partial class SkiaCamera : SkiaControl
         System.Threading.Interlocked.Exchange(ref _windowsAwaitingPostStopPreviewFrame, 1);
     }
 
+    internal void OnWindowsRecordingSourceDrop()
+    {
+        if (!IsRecording && !IsPreRecording)
+            return;
+
+        System.Threading.Interlocked.Increment(ref _diagHardwareDrops);
+    }
+
     public virtual Metadata CreateMetadata()
     {
         return new Metadata()

@@ -4503,7 +4503,7 @@ public partial class SkiaCamera : SkiaControl
             _diagLine1 = rawCamFps > 0
                 ? $"raw: {rawCamFps:F1}  cam: {inputFps:F1}  enc: {outputFps:F1} / {_targetFps}"
                 : $"cam: {inputFps:F1}  enc: {outputFps:F1} / {_targetFps}";
-            _diagLine2 = $"dropped: {_diagDroppedFrames}  submit: {_diagLastSubmitMs:F1} ms";
+            _diagLine2 = $"drop: src {_diagHardwareDrops} enc {_diagDroppedFrames}  submit: {_diagLastSubmitMs:F1} ms";
 #endif
 
             double mbps = _diagBitrate > 0 ? _diagBitrate / 1_000_000.0 : 0.0;
