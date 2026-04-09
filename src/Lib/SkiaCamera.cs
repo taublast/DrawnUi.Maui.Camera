@@ -1489,6 +1489,12 @@ public partial class SkiaCamera : SkiaControl
 #endif
 
 #if !ANDROID
+#if IOS || MACCATALYST
+            // Arm the stale-preview gate BEFORE recording flags change.
+            // StopRealtimeVideoProcessingInternal() is async and many paint cycles run
+            // before ArmApplePostStopPreviewGate() inside it would execute.
+            ArmApplePostStopPreviewGate();
+#endif
             SetIsRecordingVideo(false);
 #endif
 

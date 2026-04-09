@@ -22,6 +22,14 @@ public partial class SkiaCamera
 {
     private const bool ShouldOptimizeForNetworkUse = false; //might reduce heat and throttling
     private int _appleAwaitingPostStopPreviewFrame;
+    private int _applePostStopFramesToIgnore;
+    private bool _appleHasDeliveredPreviewFrame;
+
+    /// <summary>
+    /// Number of native preview frames to silently drop after recording/prerecording stops.
+    /// Drains stale buffered frames before showing live preview again.
+    /// </summary>
+    public static int ApplePreviewFramesToIgnoreAfterStop { get; set; } = 5;
 
     internal bool IsAwaitingAppleFreshPreviewAfterRecordingStop =>
         System.Threading.Volatile.Read(ref _appleAwaitingPostStopPreviewFrame) != 0;
@@ -2130,7 +2138,26 @@ public partial class SkiaCamera
         if (IsRecording || IsPreRecording)
             return;
 
+        // Drain stale frames before allowing preview through
+        var remaining = System.Threading.Interlocked.Decrement(ref _applePostStopFramesToIgnore);
+        if (remaining > 0)
+            return;
+
+        _appleHasDeliveredPreviewFrame = true;
         System.Threading.Interlocked.Exchange(ref _appleAwaitingPostStopPreviewFrame, 0);
+    }
+
+    /// <summary>
+    /// Sets the frame-ignore counter THEN raises the gate atomically so the background
+    /// thread cannot decrement a stale zero counter and immediately drop the gate.
+    /// Must be called BEFORE SetIsRecordingVideo(false) at every stop/abort site.
+    /// </summary>
+    private void ArmApplePostStopPreviewGate()
+    {
+        _applePostStopFramesToIgnore = _appleHasDeliveredPreviewFrame
+            ? Math.Max(1, ApplePreviewFramesToIgnoreAfterStop)
+            : 0;
+        System.Threading.Interlocked.Exchange(ref _appleAwaitingPostStopPreviewFrame, 1);
     }
 
     private void ResumeApplePreviewAfterStop()
@@ -2147,7 +2174,7 @@ public partial class SkiaCamera
 
         appleCam.ClearBufferedPreviewFrame();
 
-        System.Threading.Interlocked.Exchange(ref _appleAwaitingPostStopPreviewFrame, 1);
+        // Counter + gate already raised by ArmApplePostStopPreviewGate() at the call site
     }
 
     private void DisposeDeferredPreRecordingEncoder()
@@ -2500,6 +2527,8 @@ public partial class SkiaCamera
             stopwatchTotal.Stop();
             Debug.WriteLine($"[StopRealtimeVideoProcessing] TIMING: TOTAL stop time {stopwatchTotal.ElapsedMilliseconds}ms");
 
+            // Counter+gate must be armed BEFORE recording flags change
+            ArmApplePostStopPreviewGate();
             SetIsRecordingVideo(false);
             ResumeApplePreviewAfterStop();
             if (capturedVideo != null)
@@ -2548,6 +2577,8 @@ public partial class SkiaCamera
             _captureVideoEncoder = null;
             DisposeDeferredPreRecordingEncoder();
 
+            // Counter+gate must be armed BEFORE recording flags change
+            ArmApplePostStopPreviewGate();
             SetIsRecordingVideo(false);
             ResumeApplePreviewAfterStop();
             // NOTE: IsBusy is managed by the caller (StopVideoRecording)
@@ -2637,6 +2668,8 @@ public partial class SkiaCamera
             ClearPreRecordingBuffer();
 
             // Update state - recording is now aborted
+            // Counter+gate must be armed BEFORE recording flags change
+            ArmApplePostStopPreviewGate();
             SetIsRecordingVideo(false);
             ResumeApplePreviewAfterStop();
             SetIsPreRecording(false);
@@ -2661,6 +2694,8 @@ public partial class SkiaCamera
 
             _captureVideoEncoder = null;
 
+            // Counter+gate must be armed BEFORE recording flags change
+            ArmApplePostStopPreviewGate();
             SetIsRecordingVideo(false);
             ResumeApplePreviewAfterStop();
             SetIsPreRecording(false);
