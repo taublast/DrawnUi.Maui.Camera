@@ -19,6 +19,8 @@ Use as Camera or a standalone Audio recorder inside any MAUI app by wrapping wit
 - GPS injection and custom EXIF for both photos and videos
 - Built-in permission handling
 
+Read the [blog article](https://taublast.github.io/posts/VideoRecording) about the sample app coming along with this repo.
+
 ---
 
 
