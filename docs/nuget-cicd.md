@@ -11,10 +11,10 @@ The workflow is manual and runs from the GitHub Actions UI with `workflow_dispat
 It has three jobs in order:
 
 1. Pack NuGet packages
-2. Publish to NuGet.org
-3. Publish to GitHub Packages
+2. Publish to NuGet.org (runs if `publish_nuget = true`)
+3. Publish to GitHub Packages (runs if `publish_github = true`)
 
-Both publish jobs consume the same package artifact created by the pack job.
+Both publish jobs depend only on the pack job, so they run independently based on the input toggles.
 
 ## Package Project
 
@@ -44,6 +44,12 @@ Create this secret before enabling NuGet.org publish:
 - `NUGET_API_KEY`
 
 GitHub Packages publish uses the built-in `GITHUB_TOKEN` from the workflow run.
+
+Important GitHub Packages nuance:
+
+- the built-in `GITHUB_TOKEN` works for publish only when the GitHub Packages package is connected to this repository
+- if the package already exists and is linked to another repository, GitHub can return `403 Forbidden` even when the workflow job has `packages: write`
+- package metadata should also point to this repository so future publishes stay aligned
 
 ## GitHub Settings To Verify
 
@@ -99,6 +105,7 @@ Check:
 - package metadata repository URL and visibility settings
 - if the package already exists under GitHub Packages, verify it is linked to this repository
 - if package metadata previously pointed at another repository, republish after correcting `RepositoryUrl` and `PackageProjectUrl`
+- if the push reaches the GitHub Packages endpoint and fails with `403 Forbidden`, treat repository linkage mismatch as a primary cause, not just missing token scope
 
 ## Maintenance Notes
 
