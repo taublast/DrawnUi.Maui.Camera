@@ -24,7 +24,7 @@
     </PropertyGroup>
 
     <PropertyGroup>
-      <Version>1.9.7.4-pre1</Version>
+      <Version>1.9.7.4</Version>
       <Title>Camera addon to DrawnUI for .NET MAUI</Title>
       <PackageId>DrawnUi.Maui.Camera</PackageId>
       <Description>SkiaCamera control rendered with SkiaSharp and DrawnUI for .NET MAUI on Android, iOS, MacCatalyst and Windows</Description>
