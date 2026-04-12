@@ -13,6 +13,8 @@
       <SingleProject>true</SingleProject>
       <ImplicitUsings>enable</ImplicitUsings>
 
+      <UseSource>false</UseSource>
+
       <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">21.0</SupportedOSPlatformVersion>
       <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios'">12.2</SupportedOSPlatformVersion>
       <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst'">15.0</SupportedOSPlatformVersion>
@@ -22,7 +24,7 @@
     </PropertyGroup>
 
     <PropertyGroup>
-      <Version>1.9.7.3</Version>
+      <Version>1.9.7.4-pre1</Version>
       <Title>Camera addon to DrawnUI for .NET MAUI</Title>
       <PackageId>DrawnUi.Maui.Camera</PackageId>
       <Description>SkiaCamera control rendered with SkiaSharp and DrawnUI for .NET MAUI on Android, iOS, MacCatalyst and Windows</Description>
@@ -107,8 +109,12 @@
     <None Include="..\..\README.md" Link="README.md" />
   </ItemGroup>
 
-    <ItemGroup>
-      <PackageReference Include="DrawnUi.Maui" Version="1.9.7.3" />
+    <ItemGroup Condition="'$(UseSource)' == 'true'">
+      <ProjectReference Include="..\..\..\DrawnUi\src\Maui\DrawnUi\DrawnUi.Maui.csproj" />
+    </ItemGroup>
+
+    <ItemGroup Condition="'$(UseSource)' != 'true'">
+      <PackageReference Include="DrawnUi.Maui" Version="1.9.7.4" />
     </ItemGroup>
 
 </Project>
