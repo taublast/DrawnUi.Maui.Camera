@@ -161,6 +161,10 @@ jobs:
           $sourceName = 'github-actions'
           $sourceUrl = 'https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json'
 
+          if ([string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)) {
+            throw 'Missing GitHub Packages auth via GITHUB_TOKEN.'
+          }
+
           dotnet nuget remove source $sourceName 2>$null
           dotnet nuget add source $sourceUrl --name $sourceName --username '${{ github.actor }}' --password $env:GITHUB_TOKEN --store-password-in-clear-text
           if ($LASTEXITCODE -ne 0) {
@@ -172,6 +176,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          if ([string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)) {
+            throw 'Missing GitHub Packages auth via GITHUB_TOKEN.'
+          }
+
           $packages = Get-ChildItem -Path 'artifacts/nuget-packages' -File |
             Where-Object { $_.Extension -eq '.nupkg' }
 

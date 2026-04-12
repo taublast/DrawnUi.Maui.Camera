@@ -43,7 +43,7 @@ Create this secret before enabling NuGet.org publish:
 
 - `NUGET_API_KEY`
 
-GitHub Packages publish uses built-in `GITHUB_TOKEN` and does not require an additional custom secret.
+GitHub Packages publish uses the built-in `GITHUB_TOKEN` from the workflow run.
 
 ## GitHub Settings To Verify
 
@@ -97,6 +97,8 @@ Check:
 - workflow has `packages: write` on publish-github job
 - feed URL owner is correct
 - package metadata repository URL and visibility settings
+- if the package already exists under GitHub Packages, verify it is linked to this repository
+- if package metadata previously pointed at another repository, republish after correcting `RepositoryUrl` and `PackageProjectUrl`
 
 ## Maintenance Notes
 
