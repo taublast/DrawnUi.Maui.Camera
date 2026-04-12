@@ -3544,8 +3544,7 @@ public partial class SkiaCamera : SkiaControl
     private bool ShouldApplyPreviewEffects()
     {
         return UseRealtimeVideoProcessing
-               && !(UseRecordingFramesForPreview && (IsRecording || IsPreRecording))
-               && (ProcessPreview != null || ShouldDrawPreviewDiagnostics());
+               && !(UseRecordingFramesForPreview && (IsRecording || IsPreRecording));
     }
 
     private bool ShouldDrawPreviewDiagnostics()
