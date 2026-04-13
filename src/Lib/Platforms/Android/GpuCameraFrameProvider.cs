@@ -2,6 +2,8 @@
 using Android.Graphics;
 using Android.Views;
 using System;
+using System.Diagnostics;
+using System.Reflection;
 using System.Threading;
 using AppoMobi.Specials;
 
@@ -23,13 +25,29 @@ namespace DrawnUi.Camera
         public CameraSurfaceTextureRenderer Renderer => _renderer;
         public bool IsRunning => _running;
 
+        public static bool IsDebugBuild()
+        {
+            var entryAssembly = Assembly.GetEntryAssembly()
+                                ?? Assembly.GetExecutingAssembly(); // fallback
+
+            var debuggableAttribute = entryAssembly.GetCustomAttribute<DebuggableAttribute>();
+
+            if (debuggableAttribute == null)
+                return false; // No attribute → usually Release
+
+            // This is the key flag for "unoptimized / debug mode"
+            return debuggableAttribute.IsJITOptimizerDisabled
+                   || (debuggableAttribute.DebuggingFlags & DebuggableAttribute.DebuggingModes.DisableOptimizations) != 0;
+        }
+
         /// <summary>
         /// Check if GPU camera path is supported on this device.
         /// </summary>
         public static bool IsSupported()
         {
             // Require API 26+ for reliable SurfaceTexture behavior
-            if (Android.OS.Build.VERSION.SdkInt < Android.OS.BuildVersionCodes.O || DeviceInfo.Current.DeviceType == DeviceType.Virtual)
+            // We will NOT return false for a virtual device running on RELEASE as they are used for automated testing and should not hit deprecated RenderScript path and raise a 16kb misalignment issue.
+            if (Android.OS.Build.VERSION.SdkInt < Android.OS.BuildVersionCodes.O || (IsDebugBuild() && DeviceInfo.Current.DeviceType == DeviceType.Virtual))
             {
                 System.Diagnostics.Debug.WriteLine("[GpuCameraFrameProvider] GPU preview rendering unsupported on emulator or API < 26.");
                 return false;

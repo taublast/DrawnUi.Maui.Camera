@@ -31,6 +31,7 @@ Read the [blog article](https://taublast.github.io/posts/VideoRecording) about t
 ### Android 
 
 Fixes:
+- Virtual devices on RELEASE will not use deprecated RenderScript, falling back onto it on DEBUG.
 - Fixed stale preview dispayed for a few frames after recording ends.
 
 ### Apple
