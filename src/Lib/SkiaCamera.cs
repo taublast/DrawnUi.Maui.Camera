@@ -3444,8 +3444,16 @@ public partial class SkiaCamera : SkiaControl
         if ((IsRecording || IsPreRecording) && UseRecordingFramesForPreview &&
             _captureVideoEncoder is DrawnUi.Camera.AppleVideoToolboxEncoder appleEnc)
         {
+            // Try GPU zero-copy first — no ReadPixels, no CPU copy.
+            if (Superview != null)
+            {
+                var gpuImage = appleEnc.GetPreviewImageGpu(Superview.GetGRContext());
+                if (gpuImage != null)
+                    return gpuImage;
+            }
+            // CPU fallback (e.g. no encoding context).
             if (appleEnc.TryAcquirePreviewImage(out var img) && img != null)
-                return img; // renderer takes ownership and must dispose
+                return img;
             return null; // no fallback to raw preview during recording
         }
 

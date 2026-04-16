@@ -284,13 +284,17 @@ namespace DrawnUi.Camera
         private int _previewRequested = 1;
         public event EventHandler PreviewAvailable;
 
-        // Cached GPU-backed preview surface — avoids full-res GPU→CPU readback.
-        // Drawing onto a GPU surface keeps the blit GPU→GPU; only the small
-        // ReadPixels at preview resolution crosses to CPU.
-        private SKSurface _previewSurface;
-        private SKImageInfo _previewSurfaceInfo;
-        private byte[] _previewPixelBuffer;
         private GCHandle _queuePin;
+
+        // GPU zero-copy preview ring. Same pattern as MetalPreviewScaler ring:
+        // encoder writes to current slot, paint thread reads latest via GetPreviewImageGpu.
+        private const int PreviewRingSize = 3;
+        private IMTLTexture[] _previewRingTextures;
+        private SKSurface[] _previewRingSurfaces;
+        private int _previewRingWidth, _previewRingHeight;
+        private int _previewRingWriteIdx;
+        private IMTLTexture _previewRingLatest;
+        private readonly object _previewRingLock = new();
 
         // Statistics
         public int EncodedFrameCount { get; private set; }
@@ -1106,11 +1110,9 @@ namespace DrawnUi.Camera
 
                     if (shouldGeneratePreview)
                     {
-                        // GPU→GPU blit: snapshot the encoder surface (GPU ref, no pixel copy),
-                        // draw it downscaled onto a GPU-backed preview surface, then do a
-                        // single small ReadPixels at preview resolution.  This replaces the
-                        // old path that used a CPU raster surface which forced Skia to read
-                        // the FULL encoder frame back to CPU just to downscale it.
+                        // GPU zero-copy preview: blit encoder surface (GPU→GPU) into a ring-backed
+                        // preview surface, then expose the raw IMTLTexture to the paint thread via
+                        // GetPreviewImageGpu — no ReadPixels, no CPU copy.
                         using var gpuSnap = _surface.Snapshot();
                         if (gpuSnap != null)
                         {
@@ -1118,47 +1120,53 @@ namespace DrawnUi.Camera
                             int pw = Math.Min(_width, maxPreviewWidth);
                             int ph = Math.Max(1, (int)Math.Round(_height * (pw / (double)_width)));
 
-                            var pInfo = new SKImageInfo(pw, ph, SKColorType.Bgra8888, SKAlphaType.Premul);
-
-                            if (_previewSurface == null || _previewSurfaceInfo.Width != pInfo.Width || _previewSurfaceInfo.Height != pInfo.Height)
+                            // (Re)allocate preview ring when dims change.
+                            if (_previewRingTextures == null ||
+                                _previewRingWidth != pw || _previewRingHeight != ph)
                             {
-                                _previewSurface?.Dispose();
-                                _previewSurfaceInfo = pInfo;
-                                // GPU-backed surface: DrawImage stays GPU→GPU
-                                _previewSurface = _encodingContext != null
-                                    ? SKSurface.Create(_encodingContext, false, pInfo)
-                                    : SKSurface.Create(pInfo); // fallback to CPU if no context
-                                _previewPixelBuffer = new byte[pInfo.RowBytes * ph];
-                            }
-
-                            // GPU→GPU downscale blit
-                            _previewSurface.Canvas.DrawImage(gpuSnap, new SKRect(0, 0, pw, ph));
-                            _previewSurface.Canvas.Flush();
-
-                            // Single small GPU→CPU readback at preview resolution only
-                            bool ok;
-                            unsafe
-                            {
-                                fixed (byte* ptr = _previewPixelBuffer)
+                                DisposePreviewRing();
+                                _previewRingTextures = new IMTLTexture[PreviewRingSize];
+                                _previewRingSurfaces = new SKSurface[PreviewRingSize];
+                                for (int i = 0; i < PreviewRingSize; i++)
                                 {
-                                    ok = _previewSurface.ReadPixels(pInfo, (IntPtr)ptr, pInfo.RowBytes, 0, 0);
+                                    var desc = MTLTextureDescriptor.CreateTexture2DDescriptor(
+                                        MTLPixelFormat.BGRA8Unorm, (nuint)pw, (nuint)ph, false);
+                                    desc.Usage = MTLTextureUsage.RenderTarget | MTLTextureUsage.ShaderRead;
+                                    _previewRingTextures[i] = _metalDevice.CreateTexture(desc);
+                                    if (_encodingContext != null)
+                                    {
+                                        var texInfo = new GRMtlTextureInfo(_previewRingTextures[i].Handle);
+                                        using var backendTex = new GRBackendTexture(pw, ph, false, texInfo);
+                                        _previewRingSurfaces[i] = SKSurface.Create(_encodingContext, backendTex,
+                                            GRSurfaceOrigin.TopLeft, SKColorType.Bgra8888);
+                                    }
                                 }
+                                _previewRingWidth = pw;
+                                _previewRingHeight = ph;
+                                _previewRingWriteIdx = 0;
                             }
 
-                            if (ok)
-                            {
-                                snapshot = SKImage.FromPixelCopy(pInfo, _previewPixelBuffer);
-                            }
+                            // Reuse pre-allocated surface for current ring slot — no per-frame alloc.
+                            var ringTex = _previewRingTextures[_previewRingWriteIdx];
+                            var ringSurface = _previewRingSurfaces?[_previewRingWriteIdx];
 
-                            lock (_previewLock)
+                            if (ringSurface != null)
                             {
-                                _latestPreviewImage?.Dispose();
-                                _latestPreviewImage = snapshot;
-                                snapshot = null; // Transfer ownership
+                                // GPU→GPU downscale blit into ring slot.
+                                ringSurface.Canvas.DrawImage(gpuSnap, new SKRect(0, 0, pw, ph));
+                                ringSurface.Canvas.Flush();
+                                // Submit encoder commands — Metal hazard tracking guards ring texture
+                                // when paint thread wraps it on a different command queue.
+                                _encodingContext.Flush(true, false);
+
+                                lock (_previewRingLock)
+                                {
+                                    _previewRingLatest = ringTex;
+                                    _previewRingWriteIdx = (_previewRingWriteIdx + 1) % PreviewRingSize;
+                                }
                                 System.Threading.Interlocked.Exchange(ref _previewRequested, 0);
+                                PreviewAvailable?.Invoke(this, EventArgs.Empty);
                             }
-
-                            PreviewAvailable?.Invoke(this, EventArgs.Empty);
                         }
                     }
                 }
@@ -1443,8 +1451,7 @@ namespace DrawnUi.Camera
                 }
 
                 _surface?.Dispose(); _surface = null;
-                _previewSurface?.Dispose(); _previewSurface = null;
-                _previewPixelBuffer = null;
+                DisposePreviewRing();
             }
 
             // Cleanup files
@@ -1557,8 +1564,7 @@ namespace DrawnUi.Camera
                     }
 
                     _surface?.Dispose(); _surface = null;
-                    _previewSurface?.Dispose(); _previewSurface = null;
-                    _previewPixelBuffer = null;
+                    DisposePreviewRing();
                 }
             }
 
@@ -1685,6 +1691,62 @@ namespace DrawnUi.Camera
                 System.Threading.Interlocked.Exchange(ref _previewRequested, 1);
                 return image != null;
             }
+        }
+
+        /// <summary>
+        /// GPU zero-copy recording preview. Wraps latest ring texture as SKImage on paint thread.
+        /// Returns null if no texture ready or no GRContext.
+        /// </summary>
+        public SKImage GetPreviewImageGpu(GRContext grContext)
+        {
+            if (grContext == null) return null;
+
+            IMTLTexture texture;
+            int w, h;
+            lock (_previewRingLock)
+            {
+                texture = _previewRingLatest;
+                w = _previewRingWidth;
+                h = _previewRingHeight;
+            }
+            if (texture == null || w <= 0 || h <= 0) return null;
+
+            try
+            {
+                var mtlInfo = new GRMtlTextureInfo(texture.Handle);
+                using var backendTex = new GRBackendTexture(w, h, false, mtlInfo);
+                var image = SKImage.FromTexture(grContext, backendTex, GRSurfaceOrigin.TopLeft, SKColorType.Bgra8888);
+                if (image != null)
+                    System.Threading.Interlocked.Exchange(ref _previewRequested, 1);
+                return image;
+            }
+            catch { return null; }
+        }
+
+        private void DisposePreviewRing()
+        {
+            if (_previewRingTextures != null)
+            {
+                for (int i = 0; i < _previewRingTextures.Length; i++)
+                {
+                    _previewRingTextures[i]?.Dispose();
+                    _previewRingTextures[i] = null;
+                }
+                _previewRingTextures = null;
+            }
+            if (_previewRingSurfaces != null)
+            {
+                for (int i = 0; i < _previewRingSurfaces.Length; i++)
+                {
+                    _previewRingSurfaces[i]?.Dispose();
+                    _previewRingSurfaces[i] = null;
+                }
+                _previewRingSurfaces = null;
+            }
+            _previewRingLatest = null;
+            _previewRingWidth = 0;
+            _previewRingHeight = 0;
+            _previewRingWriteIdx = 0;
         }
 
         public Task AddFrameAsync(SKBitmap bitmap, TimeSpan timestamp)
@@ -2567,9 +2629,7 @@ namespace DrawnUi.Camera
                 _pixelBufferAdaptor?.Dispose();
                 _pixelBufferAdaptor = null;
 
-                _previewSurface?.Dispose();
-                _previewSurface = null;
-                _previewPixelBuffer = null;
+                DisposePreviewRing();
 
                 _surface?.Dispose();
                 _surface = null;

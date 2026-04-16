@@ -2792,6 +2792,9 @@ public partial class NativeCamera : NSObject, IDisposable, INativeCamera, INotif
                         _gpuPreviewFrameCounter++;
                     }
                     hasFrame = true;
+                    // Required so SkiaCamera clears the post-recording-stop preview gate
+                    // (was previously called via SetCapture; must fire here instead).
+                    FormsControl.OnAppleNativePreviewFrameBuffered();
                 }
 
                 if (hasFrame)
