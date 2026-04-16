@@ -439,6 +439,16 @@ public partial class NativeCamera : NSObject, IDisposable, INativeCamera, INotif
     private int _previewTextureWidth;
     private int _previewTextureHeight;
 
+    // GPU preview handoff — lets the paint thread wrap the latest scaled + rotated Metal
+    // texture as an SKImage without any CPU readback. Populated by the preview processing
+    // thread via DispatchScaleToRing; consumed by GetPreviewImageGpu on the paint thread.
+    private readonly object _lockGpuPreview = new();
+    private IMTLTexture _gpuPreviewTexture;
+    private int _gpuPreviewWidth;
+    private int _gpuPreviewHeight;
+    private long _gpuPreviewFrameCounter;
+    private long _gpuPreviewConsumedCounter;
+
     // Frame processing on separate thread (ArtOfFoto pattern)
     // Camera callback just signals new frame, processing thread reads from _previewTexture
     private Thread _frameProcessingThread;
@@ -2679,70 +2689,47 @@ public partial class NativeCamera : NSObject, IDisposable, INativeCamera, INotif
                     continue;
                 }
 
-                int previewWidth = width;
-                int previewHeight = height;
-                PixelBuffer pixelBuffer = null;
-                int bytesPerRow = 0;
-                bool scalingSucceeded = false;
-
-                // Use Metal scaling for Video mode (reduces data to copy)
+                // Determine output (display-oriented) dimensions. Sensor ships landscape; the
+                // GPU ring dispatch applies rotation + selfie mirror in the shader so the output
+                // texture is already correctly oriented for Skia to draw without another pass.
+                int baseW = width;
+                int baseH = height;
                 bool needsScaling = FormsControl.CaptureMode == CaptureModeType.Video &&
                                    (width > _previewMaxWidth || height > _previewMaxHeight);
-
                 if (needsScaling)
                 {
-                    // Calculate scaled dimensions
                     float scale = Math.Min((float)_previewMaxWidth / width, (float)_previewMaxHeight / height);
-                    int scaledWidth = ((int)(width * scale) / 2) * 2;
-                    int scaledHeight = ((int)(height * scale) / 2) * 2;
+                    baseW = ((int)(width * scale) / 2) * 2;
+                    baseH = ((int)(height * scale) / 2) * 2;
+                }
 
-                    // Initialize Metal scaler on first use OR if dimensions changed
-                    if (_metalScaler == null ||
-                        _metalScaler.OutputWidth != scaledWidth ||
-                        _metalScaler.OutputHeight != scaledHeight)
+                int rotDegForDispatch = (int)CurrentRotation;
+                bool rotatedQuarter = rotDegForDispatch == 90 || rotDegForDispatch == 270;
+                int outW = rotatedQuarter ? baseH : baseW;
+                int outH = rotatedQuarter ? baseW : baseH;
+
+                var frameFacingForDispatch = FormsControl.CameraDevice?.Position ?? FormsControl.Facing;
+                bool selfieMirror = frameFacingForDispatch == CameraPosition.Selfie;
+
+                // Lazy init scaler — we reuse the same instance across frames. Only recreate when
+                // sensor or scaled sensor dims change (not on rotation — that's shader-side).
+                if (_metalScaler == null ||
+                    _metalScaler.OutputWidth != baseW ||
+                    _metalScaler.OutputHeight != baseH)
+                {
+                    _metalScaler?.Dispose();
+                    _metalScaler = new MetalPreviewScaler();
+                    if (!_metalScaler.Initialize(width, height, baseW, baseH))
                     {
-                        _metalScaler?.Dispose();
-                        _metalScaler = new MetalPreviewScaler();
-                        if (!_metalScaler.Initialize(width, height, scaledWidth, scaledHeight))
-                        {
-                            _metalScaler.Dispose();
-                            _metalScaler = null;
-                        }
-                    }
-
-                    // Try Metal scaling from texture
-                    if (_metalScaler != null && _metalScaler.IsInitialized)
-                    {
-                        previewWidth = _metalScaler.OutputWidth;
-                        previewHeight = _metalScaler.OutputHeight;
-                        int dataSize = previewWidth * previewHeight * 4;
-
-                        pixelBuffer = AcquirePixelBuffer(dataSize);
-
-                        if (_metalScaler.ScaleFromTexture(texture, pixelBuffer.Data, out bytesPerRow))
-                        {
-                            scalingSucceeded = true;
-                        }
+                        _metalScaler.Dispose();
+                        _metalScaler = null;
                     }
                 }
 
-                // Full resolution if scaling not needed or failed
-                if (!scalingSucceeded)
+                IMTLTexture outTex = null;
+                if (_metalScaler != null && _metalScaler.IsInitialized)
                 {
-                    previewWidth = width;
-                    previewHeight = height;
-                    bytesPerRow = width * 4;
-                    int dataSize = height * bytesPerRow;
-
-                    pixelBuffer = AcquirePixelBuffer(dataSize);
-
-                    var region = new MTLRegion
-                    {
-                        Origin = new MTLOrigin(0, 0, 0),
-                        Size = new MTLSize(width, height, 1)
-                    };
-
-                    texture.GetBytes(pixelBuffer.Address, (nuint)bytesPerRow, region, 0);
+                    outTex = _metalScaler.DispatchScaleToRing(texture, rotDegForDispatch, selfieMirror, outW, outH);
                 }
 
                 // Update camera metadata occasionally
@@ -2792,31 +2779,18 @@ public partial class NativeCamera : NSObject, IDisposable, INativeCamera, INotif
                 var frameRotation = CurrentRotation;
                 var frameFacing = FormsControl.CameraDevice?.Position ?? FormsControl.Facing;
 
-                // Build the rotated preview image here on the background thread so that
-                // GetPreviewImage() on the UI/Paint thread is a cheap lock+swap with no CPU work.
-                // Uses pooled pinned buffers — zero per-frame LOH allocation.
-                SKImage rotatedImage = null;
-                try
+                // GPU zero-copy preview: outTex from DispatchScaleToRing is already
+                // correctly rotated and mirrored (shader-side). Store under lock for
+                // GetPreviewImageGpu() on paint thread to wrap as SKImage.FromTexture.
+                if (outTex != null)
                 {
-                    rotatedImage = RotateIntoPooledImage(
-                        pixelBuffer.Address, previewWidth, previewHeight, bytesPerRow,
-                        (double)frameRotation, frameFacing == CameraPosition.Selfie);
-                }
-                finally
-                {
-                    // Pixel data is no longer needed; return buffer to pool.
-                    ReturnPixelBuffer(pixelBuffer);
-                }
-
-                if (rotatedImage != null)
-                {
-                    SetCapture(new CapturedImage
+                    lock (_lockGpuPreview)
                     {
-                        Image = rotatedImage,
-                        Time = time,
-                        Facing = frameFacing,
-                        Rotation = (int)frameRotation
-                    });
+                        _gpuPreviewTexture = outTex;
+                        _gpuPreviewWidth = outW;
+                        _gpuPreviewHeight = outH;
+                        _gpuPreviewFrameCounter++;
+                    }
                     hasFrame = true;
                 }
 
@@ -2895,6 +2869,38 @@ public partial class NativeCamera : NSObject, IDisposable, INativeCamera, INotif
         }
     }
 
+    /// <summary>
+    /// GPU zero-copy preview: wraps cached Metal texture as SKImage on paint thread.
+    /// Call from SkiaCamera.Paint() which has GRContext. Returns null if no texture ready.
+    /// </summary>
+    public SKImage GetPreviewImageGpu(GRContext grContext)
+    {
+        if (grContext == null)
+            return null;
+
+        IMTLTexture texture = null;
+        int w = 0, h = 0;
+        lock (_lockGpuPreview)
+        {
+            texture = _gpuPreviewTexture;
+            w = _gpuPreviewWidth;
+            h = _gpuPreviewHeight;
+        }
+
+        if (texture == null || w <= 0 || h <= 0)
+            return null;
+
+        try
+        {
+            var mtlInfo = new GRMtlTextureInfo(texture.Handle);
+            using var backendTexture = new GRBackendTexture(w, h, false, mtlInfo);
+            return SKImage.FromTexture(grContext, backendTexture, GRSurfaceOrigin.TopLeft, SKColorType.Bgra8888);
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
 
     #region INotifyPropertyChanged

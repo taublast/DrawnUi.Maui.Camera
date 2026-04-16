@@ -41,6 +41,17 @@ namespace DrawnUi.Camera
         private volatile bool _asyncPreviousReady;     // set by completion handler
         private readonly object _asyncLock = new();    // guards completion flag
 
+        // GPU-only passthrough ring for zero-copy preview hand-off to Skia.
+        // No CPU readback — the output IMTLTexture is wrapped as a GPU-backed SKImage on the
+        // paint thread via SKImage.FromTexture. Ring of 3 decouples camera write cadence from
+        // paint read cadence so neither side has to stall.
+        private const int GpuRingSize = 3;
+        private IMTLTexture[] _gpuRingTextures;
+        private int _gpuRingWidth;
+        private int _gpuRingHeight;
+        private int _gpuRingWriteIdx;
+        private MTLPixelFormat _gpuRingFormat = MTLPixelFormat.BGRA8Unorm;
+
         // Metal shader source for bilinear scaling with rotation + mirror support.
         // Rotation / mirror applied via UV transform on the input sample coord — the output
         // texture is written in display orientation. Uniform branches cost nothing on the GPU.
@@ -435,8 +446,110 @@ namespace DrawnUi.Camera
             }
         }
 
+        /// <summary>
+        /// GPU-only passthrough scale. Writes the rotated / mirrored frame into the next ring
+        /// slot and returns the texture without any CPU readback. Caller (paint thread) wraps it
+        /// as an SKImage via SKImage.FromTexture. Output dimensions (<paramref name="outWidth"/>
+        /// × <paramref name="outHeight"/>) must be in display orientation — for 90/270 rotation
+        /// the caller is expected to swap the sensor dims before passing them here.
+        /// Returns null on failure.
+        /// </summary>
+        public IMTLTexture DispatchScaleToRing(IMTLTexture inputTexture, int rotation, bool mirror,
+            int outWidth, int outHeight)
+        {
+            if (!_isInitialized || inputTexture == null || outWidth <= 0 || outHeight <= 0)
+                return null;
+
+            // Lazily (re)allocate the ring when dims change. Allocation only happens on
+            // rotation swap or resize, not per frame.
+            if (_gpuRingTextures == null || _gpuRingWidth != outWidth || _gpuRingHeight != outHeight)
+            {
+                DisposeGpuRing();
+
+                _gpuRingTextures = new IMTLTexture[GpuRingSize];
+                for (int i = 0; i < GpuRingSize; i++)
+                {
+                    var desc = MTLTextureDescriptor.CreateTexture2DDescriptor(
+                        _gpuRingFormat,
+                        (nuint)outWidth,
+                        (nuint)outHeight,
+                        false);
+                    desc.Usage = MTLTextureUsage.ShaderRead | MTLTextureUsage.ShaderWrite;
+                    _gpuRingTextures[i] = _device.CreateTexture(desc);
+                }
+                _gpuRingWidth = outWidth;
+                _gpuRingHeight = outHeight;
+                _gpuRingWriteIdx = 0;
+            }
+
+            try
+            {
+                using var pool = new NSAutoreleasePool();
+
+                int slot = _gpuRingWriteIdx;
+                var target = _gpuRingTextures[slot];
+
+                var commandBuffer = _commandQueue.CommandBuffer();
+                var computeEncoder = commandBuffer.ComputeCommandEncoder;
+
+                computeEncoder.SetComputePipelineState(_scalePipeline);
+                computeEncoder.SetTexture(inputTexture, 0);
+                computeEncoder.SetTexture(target, 1);
+
+                var paramsStruct = new ScaleParams
+                {
+                    Rotation = (uint)(((rotation % 360) + 360) % 360),
+                    Mirror = mirror ? 1u : 0u,
+                };
+                unsafe
+                {
+                    computeEncoder.SetBytes((IntPtr)(&paramsStruct), (nuint)sizeof(ScaleParams), 0);
+                }
+
+                var threadGroupSize = new MTLSize(16, 16, 1);
+                var threadGroups = new MTLSize(
+                    (outWidth + 15) / 16,
+                    (outHeight + 15) / 16,
+                    1);
+
+                computeEncoder.DispatchThreadgroups(threadGroups, threadGroupSize);
+                computeEncoder.EndEncoding();
+
+                // Commit and let Metal schedule the write. No WaitUntilCompleted here —
+                // when Skia later reads this texture via SKImage.FromTexture, Metal's
+                // per-resource hazard tracking serializes the read after this write.
+                commandBuffer.Commit();
+
+                _gpuRingWriteIdx = (slot + 1) % GpuRingSize;
+                return target;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[MetalPreviewScaler] DispatchScaleToRing error: {ex.Message}");
+                return null;
+            }
+        }
+
+        private void DisposeGpuRing()
+        {
+            if (_gpuRingTextures == null)
+                return;
+
+            for (int i = 0; i < _gpuRingTextures.Length; i++)
+            {
+                _gpuRingTextures[i]?.Dispose();
+                _gpuRingTextures[i] = null;
+            }
+            _gpuRingTextures = null;
+            _gpuRingWidth = 0;
+            _gpuRingHeight = 0;
+            _gpuRingWriteIdx = 0;
+        }
+
         public void Dispose()
         {
+            DisposeGpuRing();
+
             _outputBuffer?.Dispose();
             _outputBuffer = null;
 

@@ -3458,6 +3458,14 @@ public partial class SkiaCamera : SkiaControl
         {
             return null;
         }
+
+        // GPU zero-copy preview on iOS: try Metal texture wrap first via paint-thread GRContext
+        if (Superview != null && NativeControl is NativeCamera nativeCam)
+        {
+            var gpuImage = nativeCam.GetPreviewImageGpu(Superview.GetGRContext());
+            if (gpuImage != null)
+                return gpuImage;
+        }
 #endif
         return NativeControl.GetPreviewImage();
     }
