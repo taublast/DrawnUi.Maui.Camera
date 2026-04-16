@@ -3997,12 +3997,14 @@ public partial class SkiaCamera
         if (srcW <= 0 || srcH <= 0)
             return false;
 
-        // Lazily create / recreate scaler when dimensions change
+        // Lazily create / recreate scaler when dimensions change.
+        // Output format is RGBA8Unorm to match the documented ML buffer contract
+        // (Android GL readback + Windows SKColorType.Rgba8888 return the same byte order).
         if (_mlScaler == null || _mlScalerTargetWidth != targetWidth || _mlScalerTargetHeight != targetHeight)
         {
             _mlScaler?.Dispose();
             _mlScaler = new MetalPreviewScaler();
-            if (!_mlScaler.Initialize(srcW, srcH, targetWidth, targetHeight))
+            if (!_mlScaler.Initialize(srcW, srcH, targetWidth, targetHeight, MTLPixelFormat.RGBA8Unorm))
             {
                 _mlScaler.Dispose();
                 _mlScaler = null;
@@ -4012,7 +4014,13 @@ public partial class SkiaCamera
             _mlScalerTargetHeight = targetHeight;
         }
 
-        return _mlScaler.ScaleFromTexture(texture, outputBuffer, out _);
+        // PreviewTexture is the raw sensor CVPixelBuffer wrapped in a Metal texture —
+        // still in sensor orientation. Apply rotation + selfie mirror via shader UV transform
+        // so the ML buffer matches what the user sees in the preview.
+        int rotation = (int)nativeCam.CurrentRotation;
+        bool mirror = (CameraDevice?.Position ?? Facing) == CameraPosition.Selfie;
+
+        return _mlScaler.ScaleFromTexture(texture, outputBuffer, out _, rotation, mirror);
     }
 
     #endregion

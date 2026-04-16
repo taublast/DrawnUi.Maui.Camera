@@ -20,6 +20,7 @@ namespace DrawnUi.Camera
         private CVMetalTextureCache _textureCache;
         private IMTLTexture _outputTexture;
         private CVPixelBuffer _outputBuffer;
+        private MTLPixelFormat _outputFormat = MTLPixelFormat.BGRA8Unorm;
 
         private int _inputWidth;
         private int _inputHeight;
@@ -40,13 +41,21 @@ namespace DrawnUi.Camera
         private volatile bool _asyncPreviousReady;     // set by completion handler
         private readonly object _asyncLock = new();    // guards completion flag
 
-        // Metal shader source for bilinear scaling
+        // Metal shader source for bilinear scaling with rotation + mirror support.
+        // Rotation / mirror applied via UV transform on the input sample coord — the output
+        // texture is written in display orientation. Uniform branches cost nothing on the GPU.
         private static readonly string ScaleShaderSource =
             "#include <metal_stdlib>\n" +
             "using namespace metal;\n" +
             "\n" +
+            "struct ScaleParams {\n" +
+            "    uint rotation;\n" +
+            "    uint mirror;\n" +
+            "};\n" +
+            "\n" +
             "kernel void scaleTexture(texture2d<half, access::sample> inputTexture [[texture(0)]],\n" +
             "                         texture2d<half, access::write> outputTexture [[texture(1)]],\n" +
+            "                         constant ScaleParams& params [[buffer(0)]],\n" +
             "                         uint2 gid [[thread_position_in_grid]])\n" +
             "{\n" +
             "    if (gid.x >= outputTexture.get_width() || gid.y >= outputTexture.get_height()) {\n" +
@@ -56,11 +65,33 @@ namespace DrawnUi.Camera
             "    float2 outputSize = float2(outputTexture.get_width(), outputTexture.get_height());\n" +
             "    float2 uv = (float2(gid) + 0.5) / outputSize;\n" +
             "\n" +
+            "    if (params.mirror != 0u) {\n" +
+            "        uv.x = 1.0 - uv.x;\n" +
+            "    }\n" +
+            "\n" +
+            "    float2 src;\n" +
+            "    if (params.rotation == 90u) {\n" +
+            "        src = float2(uv.y, 1.0 - uv.x);\n" +
+            "    } else if (params.rotation == 180u) {\n" +
+            "        src = float2(1.0 - uv.x, 1.0 - uv.y);\n" +
+            "    } else if (params.rotation == 270u) {\n" +
+            "        src = float2(1.0 - uv.y, uv.x);\n" +
+            "    } else {\n" +
+            "        src = uv;\n" +
+            "    }\n" +
+            "\n" +
             "    constexpr sampler linearSampler(filter::linear, address::clamp_to_edge);\n" +
-            "    half4 color = inputTexture.sample(linearSampler, uv);\n" +
+            "    half4 color = inputTexture.sample(linearSampler, src);\n" +
             "\n" +
             "    outputTexture.write(color, gid);\n" +
             "}\n";
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ScaleParams
+        {
+            public uint Rotation;
+            public uint Mirror;
+        }
 
         public bool IsInitialized => _isInitialized;
         public int OutputWidth => _outputWidth;
@@ -68,8 +99,12 @@ namespace DrawnUi.Camera
 
         /// <summary>
         /// Initialize the Metal scaler with specified dimensions.
+        /// <paramref name="outputFormat"/> controls the byte order of the readback buffer:
+        /// BGRA8Unorm (default) matches Skia Bgra8888 for the preview pipeline,
+        /// RGBA8Unorm matches the documented ML buffer contract consumed by TryGetMLFrame.
         /// </summary>
-        public bool Initialize(int inputWidth, int inputHeight, int outputWidth, int outputHeight)
+        public bool Initialize(int inputWidth, int inputHeight, int outputWidth, int outputHeight,
+            MTLPixelFormat outputFormat = MTLPixelFormat.BGRA8Unorm)
         {
             try
             {
@@ -77,6 +112,7 @@ namespace DrawnUi.Camera
                 _inputHeight = inputHeight;
                 _outputWidth = outputWidth;
                 _outputHeight = outputHeight;
+                _outputFormat = outputFormat;
 
                 // Get Metal device
                 _device = MTLDevice.SystemDefault;
@@ -128,7 +164,7 @@ namespace DrawnUi.Camera
 
                 // Create output texture
                 var descriptor = MTLTextureDescriptor.CreateTexture2DDescriptor(
-                    MTLPixelFormat.BGRA8Unorm,
+                    _outputFormat,
                     (nuint)outputWidth,
                     (nuint)outputHeight,
                     false);
@@ -149,7 +185,7 @@ namespace DrawnUi.Camera
                 for (int i = 0; i < 2; i++)
                 {
                     var desc = MTLTextureDescriptor.CreateTexture2DDescriptor(
-                        MTLPixelFormat.BGRA8Unorm,
+                        _outputFormat,
                         (nuint)outputWidth,
                         (nuint)outputHeight,
                         false);
@@ -177,8 +213,11 @@ namespace DrawnUi.Camera
         /// <summary>
         /// Scale the input CVPixelBuffer and copy result to output byte array.
         /// Returns true if successful. Skips frame if GPU is backed up (prevents lag spikes).
+        /// <paramref name="rotation"/> (0/90/180/270) and <paramref name="mirror"/> are applied
+        /// as UV transforms in the compute shader — output texture is written in display orientation.
         /// </summary>
-        public bool Scale(CVPixelBuffer inputBuffer, byte[] outputData, out int bytesPerRow)
+        public bool Scale(CVPixelBuffer inputBuffer, byte[] outputData, out int bytesPerRow,
+            int rotation = 0, bool mirror = false)
         {
             bytesPerRow = 0;
 
@@ -223,6 +262,18 @@ namespace DrawnUi.Camera
                 computeEncoder.SetComputePipelineState(_scalePipeline);
                 computeEncoder.SetTexture(inputTexture.Texture, 0);
                 computeEncoder.SetTexture(_outputTexture, 1);
+
+                // Inline uniforms — SetBytes copies into the command buffer so no ownership
+                // tracking needed per frame.
+                var paramsStruct = new ScaleParams
+                {
+                    Rotation = (uint)(((rotation % 360) + 360) % 360),
+                    Mirror = mirror ? 1u : 0u,
+                };
+                unsafe
+                {
+                    computeEncoder.SetBytes((IntPtr)(&paramsStruct), (nuint)sizeof(ScaleParams), 0);
+                }
 
                 // Calculate thread groups
                 var threadGroupSize = new MTLSize(16, 16, 1);
@@ -276,8 +327,11 @@ namespace DrawnUi.Camera
         /// GPU writes frame N to slot[current] while CPU reads frame N-1 from slot[previous].
         /// Returns false on the very first call (no previous frame yet) — 1 frame of latency
         /// at 30fps is invisible, but eliminates the per-frame WaitUntilCompleted stall.
+        /// <paramref name="rotation"/> (0/90/180/270) and <paramref name="mirror"/> are applied
+        /// as UV transforms in the compute shader — output texture is written in display orientation.
         /// </summary>
-        public bool ScaleFromTexture(IMTLTexture inputTexture, byte[] outputData, out int bytesPerRow)
+        public bool ScaleFromTexture(IMTLTexture inputTexture, byte[] outputData, out int bytesPerRow,
+            int rotation = 0, bool mirror = false)
         {
             bytesPerRow = 0;
 
@@ -305,6 +359,16 @@ namespace DrawnUi.Camera
                 computeEncoder.SetComputePipelineState(_scalePipeline);
                 computeEncoder.SetTexture(inputTexture, 0);
                 computeEncoder.SetTexture(_asyncOutputTextures[writeSlot], 1);
+
+                var paramsStruct = new ScaleParams
+                {
+                    Rotation = (uint)(((rotation % 360) + 360) % 360),
+                    Mirror = mirror ? 1u : 0u,
+                };
+                unsafe
+                {
+                    computeEncoder.SetBytes((IntPtr)(&paramsStruct), (nuint)sizeof(ScaleParams), 0);
+                }
 
                 var threadGroupSize = new MTLSize(16, 16, 1);
                 var threadGroups = new MTLSize(
