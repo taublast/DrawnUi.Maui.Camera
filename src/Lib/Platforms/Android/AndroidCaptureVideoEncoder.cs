@@ -2141,8 +2141,9 @@ namespace DrawnUi.Camera
                     _skSurface.Flush();
                     using var rawFrame = _skSurface.Snapshot();
 
-                    // Fire ML hook with real SKImage (was null before)
-                    ParentCamera.OnRawFrameAcquired(rawFrame, ParentCamera.DeviceRotation);
+                    // Fire ML hook with real SKImage (was null before).
+                    // FBO snapshot is already in display orientation — no further rotation needed.
+                    ParentCamera.OnRawFrameAcquired(rawFrame, 0);
 
                     // Apply user shader/effect via RenderFrameForRecording override.
                     // The frame fills the entire framebuffer so src == dst.

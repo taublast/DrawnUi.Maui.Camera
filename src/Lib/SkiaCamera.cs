@@ -3466,14 +3466,22 @@ public partial class SkiaCamera : SkiaControl
     /// Called on every camera frame before any compositing, overlay or preview downscaling.
     /// During recording this fires with the raw camera input before ProcessFrame draws overlays
     /// (via platform recording loops). During preview-only this fires with the raw preview frame.
-    /// Override to implement ML/AI processing. Call TryGetMLFrame() inside to get GPU-scaled pixel data.
+    /// Override to implement ML/AI processing. Call TryGetMLFrame() inside to get GPU-scaled pixel data
+    /// already in display orientation — the rotation parameter is a hint for consumers that use
+    /// rawImage directly and do not route through TryGetMLFrame.
     /// Must not block — copy pixels synchronously into a pre-allocated buffer and hand off to a background thread.
     /// </summary>
     /// <param name="rawImage">
     /// Raw camera frame as SKImage. Valid only for the duration of this call — do not cache.
     /// Null on Android GPU path (OES SurfaceTexture); TryGetMLFrame handles that case internally via GL blit.
     /// </param>
-    /// <param name="rotation">Current device rotation in degrees (0/90/180/270).</param>
+    /// <param name="rotation">
+    /// Degrees the caller must still rotate <paramref name="rawImage"/> by to reach display orientation
+    /// (0/90/180/270). 0 means the image is already upright — the common case on most platforms.
+    /// Non-zero only when the platform delivers a sensor-orientation frame (iOS recording zero-copy path).
+    /// Ignore this value when consuming the buffer returned by TryGetMLFrame — that buffer is always
+    /// rotated to display orientation internally.
+    /// </param>
     protected internal virtual void OnRawFrameAcquired(SKImage rawImage, int rotation) { }
 
     /// <summary>
@@ -3513,7 +3521,9 @@ public partial class SkiaCamera : SkiaControl
                 // PreviewCaptureSuccess (Windows) — so we skip here to avoid double-firing.
                 if (!(UseRecordingFramesForPreview && (IsRecording || IsPreRecording)))
                 {
-                    OnRawFrameAcquired(image, DeviceRotation);
+                    // GetPreviewImage returns an already-rotated SKImage, so the caller has
+                    // no further rotation to apply — rotation hint is 0 per the new contract.
+                    OnRawFrameAcquired(image, 0);
                 }
 
                 // Apply preview compositing when needed — but skip when UseRecordingFramesForPreview is active

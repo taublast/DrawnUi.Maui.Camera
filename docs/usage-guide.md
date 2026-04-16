@@ -623,7 +623,7 @@ When you need to run ML/AI inference on **raw camera frames** before any `Proces
 
 | Member | Kind | Description |
 |--------|------|-------------|
-| `OnRawFrameAcquired(SKImage rawImage, int rotation)` | `protected internal virtual` | Called every frame with the raw camera image. Override in a subclass. |
+| `OnRawFrameAcquired(SKImage rawImage, int rotation)` | `protected internal virtual` | Called every frame with the raw camera image. `rotation` is degrees the caller must still rotate `rawImage` by to reach display orientation — `0` on most paths, non-zero only when the platform delivers a sensor-orientation frame (iOS recording zero-copy). Ignore it when you route through `TryGetMLFrame` — that buffer is always upright. |
 | `TryGetMLFrame(SKImage rawImage, int targetWidth, int targetHeight, byte[] outputBuffer)` | `protected partial bool` | GPU-accelerated scale + pixel readback into a pre-allocated byte array (RGBA8888). |
 
 ### Platform Implementation

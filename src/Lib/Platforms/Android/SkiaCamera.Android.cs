@@ -1543,10 +1543,11 @@ public partial class SkiaCamera
 
                         try
                         {
-                            // Fire ML hook — raw SKImage before BeginFrame / ProcessFrame overlays
+                            // Fire ML hook — raw SKImage before BeginFrame / ProcessFrame overlays.
+                            // captured.Image is already in display orientation — no further rotation needed.
                             var rawImg = captured?.Image;
                             if (rawImg != null)
-                                OnRawFrameAcquired(rawImg, DeviceRotation);
+                                OnRawFrameAcquired(rawImg, 0);
 
                             using (droidEnc.BeginFrame(elapsedLocal, out var canvas, out var info))
                             {
