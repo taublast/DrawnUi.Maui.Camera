@@ -52,8 +52,44 @@ Performance optimizations:
 ### Shared
 
 - Updated DrawnUI nuget dependency to fix occasional GPU cache corruption 
-- Sample App added button to cancel pre-recording 
+- Sample App added button to cancel pre-recording
+- **New virtual hooks** — `OnStateChanged` and `InvalidateGpuResources` (see [Extending SkiaCamera](#extending-skiacamera))
  
+## Extending SkiaCamera
+
+Subclass `SkiaCamera` to hook into lifecycle and GPU events:
+
+```csharp
+public class MyCamera : SkiaCamera
+{
+    /// <summary>
+    /// Called when camera hardware state changes (Off → On, On → Off, etc.).
+    /// Override to react to camera start/stop without subscribing to StateChanged event.
+    /// </summary>
+    public override void OnStateChanged(HardwareState state)
+    {
+        base.OnStateChanged(state);
+        if (state == HardwareState.On)
+        {
+            // camera is ready
+        }
+    }
+}
+```
+
+For custom native camera implementations that hold GPU-backed resources, implement `INativeCamera.InvalidateGpuResources()`:
+
+```csharp
+// Called automatically by SkiaCamera.Paint() when GRContext handle changes
+// (e.g. app returns from background and Metal/GL context is recreated).
+// Reset any GPU textures, surfaces, or pipelines so they are recreated fresh.
+public void InvalidateGpuResources()
+{
+    // dispose stale GPU resources here
+}
+```
+
+The default implementation is a no-op — only override when your native camera holds resources bound to the SkiaSharp GRContext.
 ## Sample Apps
 
 - [SkiaCamera Demo](https://github.com/taublast/DrawnUi.Maui.Camera/tree/main/src/Sample) - This repo: recording with processing, shaders, AI captions.
@@ -118,6 +154,45 @@ var camera = new SkiaCamera
 };
 
 camera.IsOn = true;
+```
+
+> **Startup tip:** Set `IsOn = true` after the Canvas has drawn its first frame to avoid initialization race conditions:
+> ```csharp
+> Canvas.WillFirstTimeDraw += (sender, context) => {
+>     Tasks.StartDelayed(TimeSpan.FromMilliseconds(500), () => {
+>         CameraControl.IsOn = true;
+>     });
+> };
+> ```
+
+## Orientation Handling
+
+Lock the app to portrait at the platform level for correct saved video orientation. UI controls can still respond to device tilt by rotating individually.
+
+**Android** (`Platforms/Android/MainActivity.cs`):
+```csharp
+[Activity(ScreenOrientation = ScreenOrientation.SensorPortrait, ...)]
+```
+
+**iOS** (`Platforms/iOS/Info.plist`):
+```xml
+<key>UIRequiresFullScreen</key>
+<true/>
+<key>UISupportedInterfaceOrientations</key>
+<array>
+    <string>UIInterfaceOrientationPortrait</string>
+</array>
+```
+
+Rotate UI icons in response to device tilt using DrawnUI's rotation event:
+```csharp
+Super.RotationChanged += OnRotationChanged;
+
+private void OnRotationChanged(object sender, int rotation)
+{
+    _buttonSettings.Rotation = rotation;
+    _buttonFlash.Rotation = rotation;
+}
 ```
 
 ## Permissions

@@ -1140,7 +1140,7 @@ public partial class SkiaCamera : SkiaControl
         propertyChanged: NeedInvalidateMeasure);
 
     /// <summary>
-    /// Apspect to render image with, default is AspectFit.
+    /// Aspect to render image with, default is AspectFit.
     /// </summary>
     public TransformAspect Aspect
     {
@@ -1155,29 +1155,39 @@ public partial class SkiaCamera : SkiaControl
         HardwareState.Off,
         BindingMode.OneWayToSource, propertyChanged: ControlStateChanged);
 
+
+    /// <summary>
+    /// Called when the hardware state of the camera changes. If you don't call base StateChanged event will not be raised and appropriate logic for stopping/starting camera will not be executed.
+    /// </summary>
+    /// <param name="state"></param>
+    public virtual void OnStateChanged(HardwareState state)
+    {
+        StateChanged?.Invoke(this, state);
+        UpdateInfo();
+
+        // Update preview scale when camera becomes ready
+        if (State == HardwareState.On)
+        {
+            UpdatePreviewScaleFromFormat();
+
+            // Start preview audio capture if EnableAudioRecording or EnableAudioMonitoring is enabled and not recording
+            if ((CaptureMode == CaptureModeType.Video && EnableAudioRecording || EnableAudioMonitoring) && !IsRecording && !IsPreRecording)
+            {
+                StartPreviewAudioCapture();
+            }
+        }
+        else
+        {
+            // Camera is no longer On - stop preview audio
+            StopPreviewAudioCapture();
+        }
+    }
+
     private static void ControlStateChanged(BindableObject bindable, object oldvalue, object newvalue)
     {
         if (bindable is SkiaCamera control)
         {
-            control.StateChanged?.Invoke(control, control.State);
-            control.UpdateInfo();
-
-            // Update preview scale when camera becomes ready
-            if (control.State == HardwareState.On)
-            {
-                control.UpdatePreviewScaleFromFormat();
-
-                // Start preview audio capture if EnableAudioRecording or EnableAudioMonitoring is enabled and not recording
-                if ((control.CaptureMode == CaptureModeType.Video && control.EnableAudioRecording || control.EnableAudioMonitoring) && !control.IsRecording && !control.IsPreRecording)
-                {
-                    control.StartPreviewAudioCapture();
-                }
-            }
-            else
-            {
-                // Camera is no longer On - stop preview audio
-                control.StopPreviewAudioCapture();
-            }
+            control.OnStateChanged(control.State);
         }
     }
 
@@ -1715,10 +1725,13 @@ public partial class SkiaCamera : SkiaControl
         //separate thread at all times for internal stop
         Tasks.StartDelayed(TimeSpan.FromMilliseconds(16), () => 
         {
-            foreach (var renderer in Instances)
+            MainThread.BeginInvokeOnMainThread(() =>
             {
-                renderer.StopInternal(true);
-            }
+                foreach (var renderer in Instances)
+                {
+                    renderer.StopInternal(true);
+                }
+            });
         }); 
     }
 
@@ -3021,6 +3034,10 @@ public partial class SkiaCamera : SkiaControl
     /// </summary>
     public bool FrameAquired { get; set; }
 
+    // Last GRContext handle seen in Paint — used to detect context recreation (e.g. background/resume)
+    // and notify the native camera to invalidate GPU-backed resources.
+    private int _lastGrContextHandle;
+
     /// <summary>
     /// The SKSurface used for frame rendering
     /// </summary>
@@ -3755,15 +3772,39 @@ public partial class SkiaCamera : SkiaControl
 
         if (State == HardwareState.On)
         {
-            SetFrameFromNative();
+            // Detect GRContext recreation (background/resume) and notify native camera
+            // so platform GPU resources are invalidated before the next frame acquire.
+            if (Superview != null)
+            {
+                var grContext = Superview.GetGRContext();
+                if (grContext != null)
+                {
+                    var handle = (int)grContext.Handle;
+                    if (_lastGrContextHandle != handle)
+                    {
+                        _lastGrContextHandle = handle;
+                        InvalidateSkiaGpuResources();
+                    }
+                }
+            }
+
+            SetFrameFromNative(); //sets source for Display
         }
 
-        DrawViews(ctx);
+        DrawViews(ctx); //draws Display
 
         if (ConstantUpdate && State == HardwareState.On)
         {
             Update();
         }
+    }
+
+    /// <summary>
+    /// Invalidates SkiaSharp GPU resources used, forcing a refresh of GRContext-dependent assets.
+    /// </summary>
+    public virtual void InvalidateSkiaGpuResources()
+    {
+        NativeControl?.InvalidateGpuResources();
     }
 
     #region SkiaCamera xam control

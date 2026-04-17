@@ -433,6 +433,30 @@ public class CameraWithEffects : SkiaCamera
 }
 ```
 
+### Apply Shader Effect to Captured Photo
+
+Use `RenderCapturedPhotoAsync` to bake a shader effect into a still photo after capture:
+
+```csharp
+private async void OnCaptureSuccess(object sender, CapturedImage captured)
+{
+    var imageWithEffect = await CameraControl.RenderCapturedPhotoAsync(captured, null, image =>
+    {
+        var shaderEffect = new SkiaShaderEffect
+        {
+            ShaderSource = ShaderEffectHelper.GetFilename(CameraControl.VideoEffect),
+        };
+        image.VisualEffects.Add(shaderEffect);
+    }, true);
+
+    captured.Image.Dispose();
+    captured.Image = imageWithEffect;
+    SaveFinalPhotoInBackground(captured);
+}
+```
+
+The last `bool` parameter controls whether to apply the current `Effect` as well.
+
 ### Shader Preview Grid (Like Instagram Filters)
 ```xml
 <draw:SkiaLayout Type="Row" ItemsSource="{Binding ShaderItems}">
@@ -581,6 +605,17 @@ camera.ProcessPreview = DrawOverlay;
 | `Time` | `TimeSpan` | Elapsed time since recording started |
 | `IsPreview` | `bool` | `true` for preview frames, `false` for recording frames |
 | `Scale` | `float` | 1.0 for recording frames; `PreviewScale` for preview frames |
+
+### Camera Layout Coordinates
+
+Two properties expose the camera's position on the canvas:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `DrawingRect` | `SKRect` | Full bounding rect of the control on the canvas |
+| `DisplayRect` | `SKRect` | Actual image area when using `Fit` aspect — excludes letterbox bars |
+
+Use `DisplayRect` when mapping screen touch coordinates to camera frame coordinates, or when positioning overlays that must stay inside the actual video area.
 
 ### NewPreviewSet Event (Read-Only Analysis)
 

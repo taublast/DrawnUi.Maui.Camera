@@ -172,5 +172,14 @@ public interface INativeCamera : IDisposable
 
     int PreviewWidth { get; }
 
+    /// <summary>
+    /// Notifies the native camera that the GPU context (GRContext) has changed.
+    /// Called from the paint thread when context recreation is detected (e.g. after
+    /// app background/resume). Implementations should invalidate any GPU-backed
+    /// resources that were created against the old context so they are recreated fresh.
+    /// Default no-op — only platforms with GPU preview resources need to override.
+    /// </summary>
+    void InvalidateGpuResources() { }
+
     #endregion
 }

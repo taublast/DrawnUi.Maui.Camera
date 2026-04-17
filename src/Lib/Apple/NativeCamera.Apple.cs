@@ -448,6 +448,18 @@ public partial class NativeCamera : NSObject, IDisposable, INativeCamera, INotif
     private int _gpuPreviewHeight;
     private long _gpuPreviewFrameCounter;
     private long _gpuPreviewConsumedCounter;
+    // GRContext change detection — paint thread writes via InvalidateGpuResources(), frame thread reacts.
+    private volatile int _grContextChangedFlag; // 1 = context changed, frame thread must reset Metal resources
+
+    /// <summary>
+    /// Called by SkiaCamera paint thread when GRContext handle changes (background/resume).
+    /// Signals the frame processing thread to reset Metal scaler + ring textures so they
+    /// are recreated fresh and can be wrapped by the new context.
+    /// </summary>
+    public void InvalidateGpuResources()
+    {
+        System.Threading.Interlocked.Exchange(ref _grContextChangedFlag, 1);
+    }
 
     // Frame processing on separate thread (ArtOfFoto pattern)
     // Camera callback just signals new frame, processing thread reads from _previewTexture
@@ -2396,6 +2408,20 @@ public partial class NativeCamera : NSObject, IDisposable, INativeCamera, INotif
         // Clean up Metal preview texture (will be recreated on next start)
         ResetPreviewTexture();
 
+        // Reset Metal scaler so it is freshly initialized on next start
+        // (avoids stale GPU resources after background/resume)
+        _metalScaler?.Dispose();
+        _metalScaler = null;
+
+        // Clear GPU preview texture — prevents stale Metal texture being wrapped
+        // by GetPreviewImageGpu until new frames arrive after restart
+        lock (_lockGpuPreview)
+        {
+            _gpuPreviewTexture = null;
+            _gpuPreviewWidth = 0;
+            _gpuPreviewHeight = 0;
+        }
+
         System.Diagnostics.Debug.WriteLine("[NativeCameraiOS] Frame processing thread stopped");
     }
 
@@ -2660,6 +2686,20 @@ public partial class NativeCamera : NSObject, IDisposable, INativeCamera, INotif
 
             _processedFrameCount++;
             bool hasFrame = false;
+
+            // React to GRContext recreation (background/resume). Reset Metal scaler so
+            // ring textures are produced fresh and can be wrapped with the new context.
+            if (System.Threading.Interlocked.CompareExchange(ref _grContextChangedFlag, 0, 1) == 1)
+            {
+                _metalScaler?.Dispose();
+                _metalScaler = null;
+                lock (_lockGpuPreview)
+                {
+                    _gpuPreviewTexture = null;
+                    _gpuPreviewWidth = 0;
+                    _gpuPreviewHeight = 0;
+                }
+            }
 
             // Drain ObjC autoreleased objects each iteration (Metal API objects, CVMetalTexture wrappers, etc.)
             // Without this, autoreleased objects accumulate for the lifetime of the .NET thread.
