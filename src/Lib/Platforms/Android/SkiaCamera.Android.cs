@@ -1547,7 +1547,7 @@ public partial class SkiaCamera
                             // captured.Image is already in display orientation — no further rotation needed.
                             var rawImg = captured?.Image;
                             if (rawImg != null)
-                                OnRawFrameAcquired(rawImg, 0);
+                                OnRawFrameAvailable(rawImg, 0);
 
                             using (droidEnc.BeginFrame(elapsedLocal, out var canvas, out var info))
                             {
@@ -2252,7 +2252,7 @@ public partial class SkiaCamera
     protected partial bool TryGetMLFrame(SKImage rawImage, int targetWidth, int targetHeight, byte[] outputBuffer)
     {
         // GPU path: rawImage is null, raw frame is in GL FBO 0 — delegate to encoder's GPU scaler.
-        // MUST be called synchronously from OnRawFrameAcquired while EGL context is current.
+        // MUST be called synchronously from OnRawFrameAvailable while EGL context is current.
         if (rawImage == null)
         {
             if (_captureVideoEncoder is AndroidCaptureVideoEncoder droidEnc)

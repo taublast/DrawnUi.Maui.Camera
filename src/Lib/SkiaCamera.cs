@@ -3515,11 +3515,11 @@ public partial class SkiaCamera : SkiaControl
     /// Ignore this value when consuming the buffer returned by TryGetMLFrame — that buffer is always
     /// rotated to display orientation internally.
     /// </param>
-    protected internal virtual void OnRawFrameAcquired(SKImage rawImage, int rotation) { }
+    protected internal virtual void OnRawFrameAvailable(SKImage rawImage, int rotation) { }
 
     /// <summary>
     /// Scales the raw camera frame to targetWidth×targetHeight RGBA pixels into outputBuffer.
-    /// Must be called synchronously from within OnRawFrameAcquired — context is not valid elsewhere.
+    /// Must be called synchronously from within OnRawFrameAvailable — context is not valid elsewhere.
     /// Uses the same GPU path the camera uses internally: MetalPreviewScaler (iOS/Mac),
     /// GlPreviewScaler (Android GPU path), SKSurface+GRContext (Windows), CPU SKSurface (Android legacy).
     /// outputBuffer must be pre-allocated: targetWidth * targetHeight * 4 bytes.
@@ -3556,7 +3556,7 @@ public partial class SkiaCamera : SkiaControl
                 {
                     // GetPreviewImage returns an already-rotated SKImage, so the caller has
                     // no further rotation to apply — rotation hint is 0 per the new contract.
-                    OnRawFrameAcquired(image, 0);
+                    OnRawFrameAvailable(image, 0);
                 }
 
                 // Apply preview compositing when needed — but skip when UseRecordingFramesForPreview is active

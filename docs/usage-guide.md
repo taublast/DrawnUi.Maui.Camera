@@ -650,15 +650,15 @@ private void OnNewPreviewFrame(object sender, LoadedImageSource source)
 }
 ```
 
-## 13. Raw Frame ML Hook: OnRawFrameAcquired & TryGetMLFrame
+## 13. Raw Frame ML Hook: OnRawFrameAvailable & TryGetMLFrame
 
-When you need to run ML/AI inference on **raw camera frames** before any `ProcessFrame` overlay is composited, use `OnRawFrameAcquired` + `TryGetMLFrame`.
+When you need to run ML/AI inference on **raw camera frames** before any `ProcessFrame` overlay is composited, use `OnRawFrameAvailable` + `TryGetMLFrame`.
 
 > **Why not `NewPreviewSet`?** During recording with `UseRecordingFramesForPreview = true` (default), the preview already has `ProcessFrame` overlays baked in.
 
 | Member | Kind | Description |
 |--------|------|-------------|
-| `OnRawFrameAcquired(SKImage rawImage, int rotation)` | `protected internal virtual` | Called every frame with the raw camera image. `rotation` is degrees the caller must still rotate `rawImage` by to reach display orientation — `0` on most paths, non-zero only when the platform delivers a sensor-orientation frame (iOS recording zero-copy). Ignore it when you route through `TryGetMLFrame` — that buffer is always upright. |
+| `OnRawFrameAvailable(SKImage rawImage, int rotation)` | `protected internal virtual` | Called every frame with the raw camera image. `rotation` is degrees the caller must still rotate `rawImage` by to reach display orientation — `0` on most paths, non-zero only when the platform delivers a sensor-orientation frame (iOS recording zero-copy). Ignore it when you route through `TryGetMLFrame` — that buffer is always upright. |
 | `TryGetMLFrame(SKImage rawImage, int targetWidth, int targetHeight, byte[] outputBuffer)` | `protected partial bool` | GPU-accelerated scale + pixel readback into a pre-allocated byte array (RGBA8888). |
 
 ### Platform Implementation
@@ -678,7 +678,7 @@ public class MyCam : SkiaCamera
     private readonly byte[] _mlBuffer = new byte[224 * 224 * 4]; // RGBA8888
     private readonly SemaphoreSlim _mlSemaphore = new(1, 1);
 
-    protected internal override void OnRawFrameAcquired(SKImage rawImage, int rotation)
+    protected internal override void OnRawFrameAvailable(SKImage rawImage, int rotation)
     {
         // MUST be called synchronously (Android GPU: EGL context is current)
         if (!TryGetMLFrame(rawImage, 224, 224, _mlBuffer))
@@ -708,7 +708,7 @@ public class MyCam : SkiaCamera
 |-----|-----------|---------------|-----------|-------------|
 | `NewPreviewSet` | After preview display | Yes (when recording) | No | No |
 | `ProcessPreview` callback | Preview compositing | Partial | No | No |
-| **`OnRawFrameAcquired` + `TryGetMLFrame`** | Before any compositing | **Never** | **Yes** | **Yes** |
+| **`OnRawFrameAvailable` + `TryGetMLFrame`** | Before any compositing | **Never** | **Yes** | **Yes** |
 
 ## 14. Permission Handling
 

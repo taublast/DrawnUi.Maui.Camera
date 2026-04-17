@@ -1894,7 +1894,7 @@ namespace DrawnUi.Camera
 
         /// <summary>
         /// Scale the raw camera frame (currently in FBO 0) into outputBuffer using the GPU scaler.
-        /// MUST be called synchronously from OnRawFrameAcquired while EGL context is current.
+        /// MUST be called synchronously from OnRawFrameAvailable while EGL context is current.
         /// Returns false if the scaler is not ready or outputBuffer is too small.
         /// </summary>
         public bool TryScaleRawFrameForML(int targetWidth, int targetHeight, byte[] outputBuffer)
@@ -2134,7 +2134,7 @@ namespace DrawnUi.Camera
 
                 var canvas = _skSurface.Canvas;
 
-                // 3. Snapshot the raw camera frame for RenderFrameForRecording and OnRawFrameAcquired hooks.
+                // 3. Snapshot the raw camera frame for RenderFrameForRecording and OnRawFrameAvailable hooks.
                 // GPU-backed snapshot — no CPU readback, stays on GPU (~0.2ms).
                 if (ParentCamera != null)
                 {
@@ -2143,7 +2143,7 @@ namespace DrawnUi.Camera
 
                     // Fire ML hook with real SKImage (was null before).
                     // FBO snapshot is already in display orientation — no further rotation needed.
-                    ParentCamera.OnRawFrameAcquired(rawFrame, 0);
+                    ParentCamera.OnRawFrameAvailable(rawFrame, 0);
 
                     // Apply user shader/effect via RenderFrameForRecording override.
                     // The frame fills the entire framebuffer so src == dst.

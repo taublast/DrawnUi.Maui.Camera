@@ -176,7 +176,7 @@ public partial class SkiaCamera : SkiaControl
         using (winEnc.BeginFrame(elapsed, out var canvas, out var info))
         {
             // srcImg from Windows capture is already in display orientation — no further rotation needed.
-            OnRawFrameAcquired(srcImg, 0);
+            OnRawFrameAvailable(srcImg, 0);
 
             if (canvas == null)
                 return;

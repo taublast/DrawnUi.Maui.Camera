@@ -484,7 +484,7 @@ public partial class SkiaCamera
                 }
 
                 // Fire ML hook — raw frame before ProcessFrame overlays are composited
-                OnRawFrameAcquired(imageToDraw, imageRotation);
+                OnRawFrameAvailable(imageToDraw, imageRotation);
 
                 try
                 {
