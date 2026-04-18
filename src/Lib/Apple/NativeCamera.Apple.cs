@@ -1788,9 +1788,10 @@ public partial class NativeCamera : NSObject, IDisposable, INativeCamera, INotif
                 // Apply rotation if needed
                 using var bitmap = SKBitmap.FromImage(rawImage);
 
-                // Stills are saved non-mirrored matching native iOS camera and Android behaviour.
-                // Preview stays mirrored via HandleOrientationForPreview — only orientation is corrected here.
-                var mirrorX = FormsControl.MirrorSavedSelfiePhoto && (FormsControl.CameraDevice?.Position ?? FormsControl.Facing) == CameraPosition.Selfie;
+                // Default false saves selfie stills as seen in preview.
+                // True mirrors them back to the non-preview orientation.
+                var mirrorX = !FormsControl.MirrorSavedSelfiePhoto &&
+                              (FormsControl.CameraDevice?.Position ?? FormsControl.Facing) == CameraPosition.Selfie;
 
                 using var skBitmap = HandleOrientationForStillCapture(bitmap, (double)CurrentRotation, deviceRotation, mirrorX);
 
