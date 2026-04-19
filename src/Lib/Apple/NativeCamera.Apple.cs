@@ -1803,6 +1803,7 @@ public partial class NativeCamera : NSObject, IDisposable, INativeCamera, INotif
 
                 var capturedImage = new CapturedImage()
                 {
+                    DeviceRotation = FormsControl.DeviceRotation,
                     Facing = FormsControl.CameraDevice?.Position ?? FormsControl.Facing,
                     Time = DateTime.UtcNow,
                     Image = skImage,

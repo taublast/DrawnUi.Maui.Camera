@@ -1097,6 +1097,7 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
 
                 capturedImage = new CapturedImage()
                 {
+                    DeviceRotation = FormsControl.DeviceRotation,
                     Facing = FormsControl.CameraDevice?.Position ?? FormsControl.Facing,
                     Time = DateTime.UtcNow,
                     Image = skImage, // Transfer ownership to CapturedImage - renderer will dispose
@@ -1238,6 +1239,7 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
 
                 capturedImage = new CapturedImage()
                 {
+                    DeviceRotation = FormsControl.DeviceRotation,
                     Facing = FormsControl.CameraDevice?.Position ?? FormsControl.Facing,
                     Time = DateTime.UtcNow,
                     Image = skImage, // Transfer ownership to CapturedImage - renderer will dispose
@@ -2138,6 +2140,7 @@ public partial class NativeCamera : IDisposable, INativeCamera, INotifyPropertyC
 
             var capturedImage = new CapturedImage()
             {
+                DeviceRotation = FormsControl.DeviceRotation,
                 Facing = FormsControl.CameraDevice?.Position ?? FormsControl.Facing,
                 Time = DateTime.UtcNow,
                 Image = skImage,

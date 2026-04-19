@@ -661,6 +661,7 @@ public partial class NativeCamera : Java.Lang.Object, ImageReader.IOnImageAvaila
 
         var outImage = new CapturedImage()
         {
+            DeviceRotation = FormsControl.DeviceRotation,
             Facing = FormsControl.CameraDevice?.Position ?? FormsControl.Facing,
             Time = monotonicTime,
             Image = sk,
@@ -2613,6 +2614,7 @@ public partial class NativeCamera : Java.Lang.Object, ImageReader.IOnImageAvaila
 
         var outImage = new CapturedImage()
         {
+            DeviceRotation = FormsControl.DeviceRotation,
             Facing = FormsControl.CameraDevice?.Position ?? FormsControl.Facing,
             Time = monotonicTime,
             Image = skImage,
@@ -2865,6 +2867,7 @@ public partial class NativeCamera : Java.Lang.Object, ImageReader.IOnImageAvaila
 
             var outImage = new CapturedImage()
             {
+                DeviceRotation = FormsControl.DeviceRotation,
                 Facing = FormsControl.CameraDevice?.Position ?? FormsControl.Facing,
                 Time = DateTime.UtcNow,
                 Image = allocated.Bitmap.ToSKImage(),
