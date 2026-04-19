@@ -18,6 +18,10 @@
 
     </PropertyGroup>
 
+  <PropertyGroup>
+    <ValidateXcodeVersion>false</ValidateXcodeVersion>
+  </PropertyGroup>
+
 	<PropertyGroup Condition="Exists('..\..\..\Secrets.Ai.cs')">
         <DefineConstants>$(DefineConstants);HAS_SECRETS_AI</DefineConstants>
     </PropertyGroup>
