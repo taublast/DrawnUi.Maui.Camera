@@ -20,7 +20,8 @@ public partial class SkiaCamera
         task = System.Threading.Tasks.Task.CompletedTask;
     }
 
-    protected partial bool TryGetMLFrame(SKImage rawImage, int targetWidth, int targetHeight, byte[] outputBuffer)
+    private partial bool TryGetRgbaCore(SKImage? rawImage, int targetWidth, int targetHeight, byte[] outputBuffer,
+        int outputRotation, float cropRatio)
     {
         return false;
     }

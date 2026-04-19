@@ -36,8 +36,19 @@ public partial class SkiaCamera : SkiaControl
     #region PROPERTIES
 
 
+    /// <summary>
+    /// Raised when <see cref="IsPreRecording"/> changes.
+    /// </summary>
     public event EventHandler<bool> IsPreRecordingChanged;
+
+    /// <summary>
+    /// Raised when <see cref="IsRecording"/> changes.
+    /// </summary>
     public event EventHandler<bool> IsRecordingChanged;
+
+    /// <summary>
+    /// Raised when <see cref="IsRecordingAudioOnly"/> changes.
+    /// </summary>
     public event EventHandler<bool> IsRecordingAudioOnlyChanged;
 
     /// <summary>
@@ -196,6 +207,9 @@ public partial class SkiaCamera : SkiaControl
         44100,
         BindingMode.OneWay);
 
+    /// <summary>
+    /// Gets or sets the audio sample rate used for audio capture and recording.
+    /// </summary>
     public int AudioSampleRate
     {
         get => (int)GetValue(AudioSampleRateProperty);
@@ -209,6 +223,9 @@ public partial class SkiaCamera : SkiaControl
         1,
         BindingMode.OneWay);
 
+    /// <summary>
+    /// Gets or sets the number of audio channels used for capture and recording.
+    /// </summary>
     public int AudioChannels
     {
         get => (int)GetValue(AudioChannelsProperty);
@@ -222,6 +239,9 @@ public partial class SkiaCamera : SkiaControl
         AudioBitDepth.Pcm16Bit,
         BindingMode.OneWay);
 
+    /// <summary>
+    /// Gets or sets the PCM bit depth used for audio capture and recording.
+    /// </summary>
     public AudioBitDepth AudioBitDepth
     {
         get => (AudioBitDepth)GetValue(AudioBitDepthProperty);
@@ -260,6 +280,9 @@ public partial class SkiaCamera : SkiaControl
         typeof(SkiaCamera),
         false);
 
+    /// <summary>
+    /// Gets or sets whether captured selfie photos should remain mirrored like the preview.
+    /// </summary>
     public bool MirrorSavedSelfiePhoto
     {
         get { return (bool)GetValue(MirrorSavedSelfiePhotoProperty); }
@@ -573,7 +596,7 @@ public partial class SkiaCamera : SkiaControl
         CameraType.Default, propertyChanged: NeedRestart);
 
     /// <summary>
-    /// To be implemented
+    /// Gets or sets the preferred physical camera type when the platform exposes multiple camera classes.
     /// </summary>
     public CameraType Type
     {
@@ -582,7 +605,7 @@ public partial class SkiaCamera : SkiaControl
     }
 
     /// <summary>
-    /// Will be applied to viewport for focal length etc
+    /// Gets or sets the active logical camera description used for focal-length and metadata calculations.
     /// </summary>
     public CameraUnit CameraDevice
     {
@@ -602,6 +625,10 @@ public partial class SkiaCamera : SkiaControl
 
     private CameraUnit _virtualCameraUnit;
 
+    /// <summary>
+    /// Applies focal-length information from a camera unit to this control and notifies bindings.
+    /// </summary>
+    /// <param name="value">Camera description supplying focal-length metadata.</param>
     public void AssignFocalLengthInternal(CameraUnit value)
     {
         if (value != null)
@@ -614,6 +641,9 @@ public partial class SkiaCamera : SkiaControl
 
     private int _PreviewWidth;
 
+    /// <summary>
+    /// Gets or sets the current preview width reported by the native camera pipeline.
+    /// </summary>
     public int PreviewWidth
     {
         get { return _PreviewWidth; }
@@ -629,6 +659,9 @@ public partial class SkiaCamera : SkiaControl
 
     private int _PreviewHeight;
 
+    /// <summary>
+    /// Gets or sets the current preview height reported by the native camera pipeline.
+    /// </summary>
     public int PreviewHeight
     {
         get { return _PreviewHeight; }
@@ -644,6 +677,9 @@ public partial class SkiaCamera : SkiaControl
 
     private int _CaptureWidth;
 
+    /// <summary>
+    /// Gets or sets the current still-capture width reported by the native camera pipeline.
+    /// </summary>
     public int CaptureWidth
     {
         get { return _CaptureWidth; }
@@ -659,6 +695,9 @@ public partial class SkiaCamera : SkiaControl
 
     private int _CaptureHeight;
 
+    /// <summary>
+    /// Gets or sets the current still-capture height reported by the native camera pipeline.
+    /// </summary>
     public int CaptureHeight
     {
         get { return _CaptureHeight; }
@@ -682,6 +721,11 @@ public partial class SkiaCamera : SkiaControl
         }
     }
 
+    /// <summary>
+    /// Converts a device orientation into a clockwise sensor rotation in degrees.
+    /// </summary>
+    /// <param name="orientation">Device orientation to convert.</param>
+    /// <returns>Rotation angle in degrees.</returns>
     public static double GetSensorRotation(DeviceOrientation orientation)
     {
         if (orientation == DeviceOrientation.PortraitUpsideDown)
@@ -702,6 +746,9 @@ public partial class SkiaCamera : SkiaControl
         typeof(SkiaCamera),
         null);
 
+    /// <summary>
+    /// Gets or sets the most recent still image captured by this camera control.
+    /// </summary>
     public CapturedImage CapturedStillImage
     {
         get { return (CapturedImage)GetValue(CapturedStillImageProperty); }
@@ -719,6 +766,9 @@ public partial class SkiaCamera : SkiaControl
             NeedRestart(bindable, value, newValue);
         });
 
+    /// <summary>
+    /// Gets or sets which camera position should be used for preview and capture.
+    /// </summary>
     public CameraPosition Facing
     {
         get => (CameraPosition)GetValue(FacingProperty);
@@ -763,6 +813,9 @@ public partial class SkiaCamera : SkiaControl
         CaptureQuality.High,
         propertyChanged: NeedRestart);
 
+    /// <summary>
+    /// Gets or sets the still-photo quality preset used when selecting capture formats automatically.
+    /// </summary>
     public CaptureQuality PhotoQuality
     {
         get => (CaptureQuality)GetValue(PhotoQualityProperty);
@@ -830,6 +883,9 @@ public partial class SkiaCamera : SkiaControl
         typeof(SkiaCamera),
         0.0);
 
+    /// <summary>
+    /// Gets or sets the effective focal length in millimeters reported for the active camera.
+    /// </summary>
     public double FocalLength
     {
         get { return (double)GetValue(FocalLengthProperty); }
@@ -842,6 +898,9 @@ public partial class SkiaCamera : SkiaControl
         typeof(SkiaCamera),
         0.0);
 
+    /// <summary>
+    /// Gets or sets the focal length after applying <see cref="FocalLengthAdjustment"/>.
+    /// </summary>
     public double FocalLengthAdjusted
     {
         get { return (double)GetValue(FocalLengthAdjustedProperty); }
@@ -854,6 +913,9 @@ public partial class SkiaCamera : SkiaControl
         typeof(SkiaCamera),
         0.0);
 
+    /// <summary>
+    /// Gets or sets an additive focal-length adjustment used for virtual-camera calculations.
+    /// </summary>
     public double FocalLengthAdjustment
     {
         get { return (double)GetValue(FocalLengthAdjustmentProperty); }
@@ -866,6 +928,9 @@ public partial class SkiaCamera : SkiaControl
         typeof(SkiaCamera),
         false);
 
+    /// <summary>
+    /// Gets or sets whether zoom should be driven manually rather than inferred from camera-device metadata.
+    /// </summary>
     public bool ManualZoom
     {
         get { return (bool)GetValue(ManualZoomProperty); }
@@ -927,6 +992,9 @@ public partial class SkiaCamera : SkiaControl
         typeof(SkiaCamera),
         1.0, defaultBindingMode: BindingMode.OneWayToSource);
 
+    /// <summary>
+    /// Gets or sets the native texture scaling factor reported by the preview pipeline.
+    /// </summary>
     public double TextureScale
     {
         get { return (double)GetValue(TextureScaleProperty); }
@@ -939,6 +1007,9 @@ public partial class SkiaCamera : SkiaControl
         typeof(SkiaCamera),
         1.0);
 
+    /// <summary>
+    /// Gets or sets the minimum allowed zoom factor.
+    /// </summary>
     public double ZoomLimitMin
     {
         get { return (double)GetValue(ZoomLimitMinProperty); }
@@ -951,6 +1022,9 @@ public partial class SkiaCamera : SkiaControl
         typeof(SkiaCamera),
         10.0);
 
+    /// <summary>
+    /// Gets or sets the maximum allowed zoom factor.
+    /// </summary>
     public double ZoomLimitMax
     {
         get { return (double)GetValue(ZoomLimitMaxProperty); }
@@ -1193,6 +1267,9 @@ public partial class SkiaCamera : SkiaControl
         }
     }
 
+    /// <summary>
+    /// Gets or sets the current hardware state of the camera pipeline.
+    /// </summary>
     public HardwareState State
     {
         get { return (HardwareState)GetValue(StateProperty); }
@@ -1206,6 +1283,9 @@ public partial class SkiaCamera : SkiaControl
         false,
         propertyChanged: PowerChanged);
 
+    /// <summary>
+    /// Gets or sets whether the camera control should be powered on.
+    /// </summary>
     public bool IsOn
     {
         get { return (bool)GetValue(IsOnProperty); }
@@ -1218,6 +1298,9 @@ public partial class SkiaCamera : SkiaControl
         typeof(SkiaCamera),
         false);
 
+    /// <summary>
+    /// Gets or sets whether the control is currently executing a capture or recording operation.
+    /// </summary>
     public bool IsBusy
     {
         get { return (bool)GetValue(IsBusyProperty); }
@@ -1230,6 +1313,9 @@ public partial class SkiaCamera : SkiaControl
         typeof(SkiaCamera),
         CameraPickerMode.None);
 
+    /// <summary>
+    /// Gets or sets the picker workflow mode used by this camera control.
+    /// </summary>
     public CameraPickerMode PickerMode
     {
         get { return (CameraPickerMode)GetValue(PickerModeProperty); }
@@ -1242,6 +1328,9 @@ public partial class SkiaCamera : SkiaControl
         typeof(SkiaCamera),
         CameraEffect.None);
 
+    /// <summary>
+    /// Gets or sets the native camera filter effect applied to the preview stream.
+    /// </summary>
     public CameraEffect Filter
     {
         get { return (CameraEffect)GetValue(FilterProperty); }
@@ -1267,6 +1356,9 @@ public partial class SkiaCamera : SkiaControl
 
     SKSize _previewSize;
 
+    /// <summary>
+    /// Gets or sets the size of captured still photos in pixels.
+    /// </summary>
     public SKSize CapturePhotoSize
     {
         get { return _capturePhotoSize; }
@@ -1283,6 +1375,11 @@ public partial class SkiaCamera : SkiaControl
 
     SKSize _capturePhotoSize;
 
+    /// <summary>
+    /// Updates the preview content size after camera rotation has been applied.
+    /// </summary>
+    /// <param name="size">Rotated preview size.</param>
+    /// <param name="cameraRotation">Rotation used by the native camera pipeline.</param>
     public void SetRotatedContentSize(SKSize size, int cameraRotation)
     {
         if (size.Width < 0 || size.Height < 0)
@@ -1298,6 +1395,9 @@ public partial class SkiaCamera : SkiaControl
     private string _DisplayInfo;
     private bool _hasPermissions;
 
+    /// <summary>
+    /// Gets or sets diagnostic display text describing the current camera state.
+    /// </summary>
     public string DisplayInfo
     {
         get { return _DisplayInfo; }
@@ -1327,6 +1427,9 @@ public partial class SkiaCamera : SkiaControl
         }
     }
 
+    /// <summary>
+    /// Gets or sets the Skia image effect applied to the preview display.
+    /// </summary>
     public SkiaImageEffect Effect
     {
         get { return (SkiaImageEffect)GetValue(EffectProperty); }
@@ -1711,12 +1814,18 @@ public partial class SkiaCamera : SkiaControl
         ResumeIfNeeded();
     }
 
+    /// <summary>
+    /// Restarts the camera after app resume when the control is still logically on.
+    /// </summary>
     public void ResumeIfNeeded()
     {
         if (IsOn)
             StartInternal();
     }
 
+    /// <summary>
+    /// Tracks all live <see cref="SkiaCamera"/> instances in the current process.
+    /// </summary>
     public static List<SkiaCamera> Instances = new();
 
     /// <summary>
@@ -1901,6 +2010,10 @@ public partial class SkiaCamera : SkiaControl
 #endif
     }
 
+    /// <summary>
+    /// Stops other registered camera instances, or all instances when requested.
+    /// </summary>
+    /// <param name="all">True to stop every instance including this one; false to stop only other instances.</param>
     public void DisableOtherCameras(bool all = false)
     {
         //separate thread at all times for internal stop
@@ -1923,7 +2036,6 @@ public partial class SkiaCamera : SkiaControl
             }
         });
 
-       
     }
 
     /// <summary>
@@ -1945,6 +2057,10 @@ public partial class SkiaCamera : SkiaControl
 
 #if !ONPLATFORM
 
+    /// <summary>
+    /// Sets the camera zoom level on platforms that implement native zoom control.
+    /// </summary>
+    /// <param name="value">Requested zoom factor.</param>
     public virtual void SetZoom(double value)
     {
         throw new NotImplementedException();
@@ -1980,8 +2096,15 @@ public partial class SkiaCamera : SkiaControl
             UpdatePreviewScale();
         }
     }
+
+    /// <summary>
+    /// Gets the preview display rectangle inside the control after layout and aspect fitting are applied.
+    /// </summary>
     public SKRect DisplayRect { get; private set; } = SKRect.Empty;
 
+    /// <summary>
+    /// Releases managed and native resources owned by the camera control and its children.
+    /// </summary>
     public override void OnWillDisposeWithChildren()
     {
         base.OnWillDisposeWithChildren();
@@ -2042,6 +2165,13 @@ public partial class SkiaCamera : SkiaControl
 #endif
     }
 
+    /// <summary>
+    /// Measures the camera control and lazily creates the preview display when needed.
+    /// </summary>
+    /// <param name="widthConstraint">Available width in drawing units.</param>
+    /// <param name="heightConstraint">Available height in drawing units.</param>
+    /// <param name="scale">Current rendering scale.</param>
+    /// <returns>Measured size for the control.</returns>
     public override ScaledSize OnMeasuring(float widthConstraint, float heightConstraint, float scale)
     {
         if (Display == null)
@@ -2166,6 +2296,9 @@ public partial class SkiaCamera : SkiaControl
         }
     }
 
+    /// <summary>
+    /// Default album name used when saving media and no explicit album is provided.
+    /// </summary>
     public static string DefaultAlbum = string.Empty;
 
     /// <summary>
@@ -2198,6 +2331,9 @@ public partial class SkiaCamera : SkiaControl
     /// </summary>
     public override bool WillClipBounds => true;
 
+    /// <summary>
+    /// Creates a new camera control instance and registers it in <see cref="Instances"/>.
+    /// </summary>
     public SkiaCamera()
     {
         Instances.Add(this);
@@ -2276,6 +2412,9 @@ public partial class SkiaCamera : SkiaControl
     /// </summary>
     public event EventHandler<Exception> AudioRecordingFailed;
 
+    /// <summary>
+    /// Raised when the camera hardware state changes.
+    /// </summary>
     public event EventHandler<HardwareState> StateChanged;
 
     internal void RaiseError(string error)
@@ -3110,6 +3249,9 @@ public partial class SkiaCamera : SkiaControl
 
     #endregion
 
+    /// <summary>
+    /// Gets or sets the active platform-specific native camera implementation.
+    /// </summary>
     public INativeCamera NativeControl;
 
     private IAudioCapture _audioCapture;
@@ -3428,7 +3570,7 @@ public partial class SkiaCamera : SkiaControl
         NewPreviewSet?.Invoke(this, source);
     }
 
-    protected virtual RawCameraFrame CreateRawCameraFrame(SKImage? rawImage, int rawImageRotation,
+    public virtual RawCameraFrame CreateRawCameraFrameInternal(SKImage? rawImage, int rawImageRotation,
         int sourceWidth = 0, int sourceHeight = 0, bool rawImageIsMirrored = false, int? displayRotation = null)
     {
         if (sourceWidth <= 0 || sourceHeight <= 0)
@@ -3738,7 +3880,7 @@ public partial class SkiaCamera : SkiaControl
                 {
                     // GetPreviewImage returns an already-rotated SKImage, so the caller has
                     // no further rotation to apply — rotation hint is 0 per the new contract.
-                    OnRawFrameAvailable(CreateRawCameraFrame(image, 0));
+                    OnRawFrameAvailable(CreateRawCameraFrameInternal(image, 0));
                 }
 
                 // Apply preview compositing when needed — but skip when UseRecordingFramesForPreview is active

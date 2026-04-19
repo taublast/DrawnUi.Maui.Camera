@@ -1547,7 +1547,7 @@ public partial class SkiaCamera
                             // captured.Image is already in display orientation — no further rotation needed.
                             var rawImg = captured?.Image;
                             if (rawImg != null)
-                                OnRawFrameAvailable(CreateRawCameraFrame(rawImg, 0));
+                                OnRawFrameAvailable(CreateRawCameraFrameInternal(rawImg, 0));
 
                             using (droidEnc.BeginFrame(elapsedLocal, out var canvas, out var info))
                             {
