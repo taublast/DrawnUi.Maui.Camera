@@ -1,5 +1,7 @@
 ﻿global using DrawnUi.Draw;
 global using SkiaSharp;
+using System.Buffers;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Windows.Input;
@@ -3426,6 +3428,43 @@ public partial class SkiaCamera : SkiaControl
         NewPreviewSet?.Invoke(this, source);
     }
 
+    protected virtual RawCameraFrame CreateRawCameraFrame(SKImage? rawImage, int rawImageRotation,
+        int sourceWidth = 0, int sourceHeight = 0, bool rawImageIsMirrored = false, int? displayRotation = null)
+    {
+        if (sourceWidth <= 0 || sourceHeight <= 0)
+        {
+            if (rawImage != null)
+            {
+                sourceWidth = rawImage.Width;
+                sourceHeight = rawImage.Height;
+            }
+            else if (_sourceFrameWidth > 0 && _sourceFrameHeight > 0)
+            {
+                sourceWidth = _sourceFrameWidth;
+                sourceHeight = _sourceFrameHeight;
+            }
+            else if (_actualPreviewWidth > 0 && _actualPreviewHeight > 0)
+            {
+                sourceWidth = _actualPreviewWidth;
+                sourceHeight = _actualPreviewHeight;
+            }
+            else if (CurrentVideoFormat != null)
+            {
+                sourceWidth = CurrentVideoFormat.Width;
+                sourceHeight = CurrentVideoFormat.Height;
+            }
+        }
+
+        return new RawCameraFrame(
+            this,
+            rawImage,
+            NormalizeRotationDegrees(rawImageRotation),
+            NormalizeRotationDegrees(displayRotation ?? (DeviceRotation >= 0 ? DeviceRotation : 0)),
+            rawImageIsMirrored,
+            sourceWidth,
+            sourceHeight);
+    }
+
     protected virtual SKImage AquireFrameFromNative()
     {
         // When UseRecordingFramesForPreview=false, we want raw ImageReader preview (don't suppress)
@@ -3499,33 +3538,176 @@ public partial class SkiaCamera : SkiaControl
     /// Called on every camera frame before any compositing, overlay or preview downscaling.
     /// During recording this fires with the raw camera input before ProcessFrame draws overlays
     /// (via platform recording loops). During preview-only this fires with the raw preview frame.
-    /// Override to implement ML/AI processing. Call TryGetMLFrame() inside to get GPU-scaled pixel data
-    /// already in display orientation — the rotation parameter is a hint for consumers that use
-    /// rawImage directly and do not route through TryGetMLFrame.
+    /// Override to implement ML/AI processing. Call <see cref="RawCameraFrame.TryGetRgba(int,int,byte[],OutputOrientation,float)"/> inside to get
+    /// final RGBA pixels in a pre-allocated buffer. <see cref="RawCameraFrame.RawImage"/> is an
+    /// optional advanced path for custom processing.
     /// Must not block — copy pixels synchronously into a pre-allocated buffer and hand off to a background thread.
     /// </summary>
-    /// <param name="rawImage">
-    /// Raw camera frame as SKImage. Valid only for the duration of this call — do not cache.
-    /// Null on Android GPU path (OES SurfaceTexture); TryGetMLFrame handles that case internally via GL blit.
-    /// </param>
-    /// <param name="rotation">
-    /// Degrees the caller must still rotate <paramref name="rawImage"/> by to reach display orientation
-    /// (0/90/180/270). 0 means the image is already upright — the common case on most platforms.
-    /// Non-zero only when the platform delivers a sensor-orientation frame (iOS recording zero-copy path).
-    /// Ignore this value when consuming the buffer returned by TryGetMLFrame — that buffer is always
-    /// rotated to display orientation internally.
-    /// </param>
-    protected internal virtual void OnRawFrameAvailable(SKImage rawImage, int rotation) { }
+    protected internal virtual void OnRawFrameAvailable(RawCameraFrame frame)
+    {
+        OnRawFrameAvailable(frame.RawImage, frame.RawImageRotation);
+    }
 
     /// <summary>
-    /// Scales the raw camera frame to targetWidth×targetHeight RGBA pixels into outputBuffer.
+    /// Legacy raw-frame hook preserved for compatibility.
+    /// Prefer overriding <see cref="OnRawFrameAvailable(RawCameraFrame)"/> and call <see cref="RawCameraFrame.TryGetRgba(int,int,byte[],OutputOrientation,float)"/>.
+    /// </summary>
+    [EditorBrowsable(EditorBrowsableState.Never)]
+    [Obsolete("Override OnRawFrameAvailable(RawCameraFrame frame) and use frame.TryGetRgba(...) for AI/ML.")]
+    protected internal virtual void OnRawFrameAvailable(SKImage? rawImage, int rotation) { }
+
+    /// <summary>
+    /// Scales the raw camera frame to display-oriented RGBA pixels.
     /// Must be called synchronously from within OnRawFrameAvailable — context is not valid elsewhere.
     /// Uses the same GPU path the camera uses internally: MetalPreviewScaler (iOS/Mac),
     /// GlPreviewScaler (Android GPU path), SKSurface+GRContext (Windows), CPU SKSurface (Android legacy).
     /// outputBuffer must be pre-allocated: targetWidth * targetHeight * 4 bytes.
     /// Returns false if scaling failed or no raw frame is available.
     /// </summary>
-    protected partial bool TryGetMLFrame(SKImage rawImage, int targetWidth, int targetHeight, byte[] outputBuffer);
+    private partial bool TryGetRgbaCore(SKImage? rawImage, int targetWidth, int targetHeight, byte[] outputBuffer,
+        int outputRotation, float cropRatio);
+
+    internal bool TryGetRgbaInternal(SKImage? rawImage, int targetWidth, int targetHeight, byte[] outputBuffer,
+        OutputOrientation orientation = OutputOrientation.Display, float cropRatio = 1f, int displayRotation = 0)
+    {
+        if (targetWidth <= 0 || targetHeight <= 0)
+            return false;
+
+        if (!float.IsFinite(cropRatio) || cropRatio <= 0f)
+            return false;
+
+        cropRatio = MathF.Min(cropRatio, 1f);
+
+        int requiredBytes;
+        try
+        {
+            requiredBytes = checked(targetWidth * targetHeight * 4);
+        }
+        catch (OverflowException)
+        {
+            return false;
+        }
+
+        if (outputBuffer == null || outputBuffer.Length < requiredBytes)
+            return false;
+
+        int extraRotation = GetExtraRotationForOrientation(orientation, displayRotation);
+        return TryGetRgbaCore(rawImage, targetWidth, targetHeight, outputBuffer, extraRotation, cropRatio);
+    }
+
+    protected bool TryGetRgba(SKImage? rawImage, int targetWidth, int targetHeight, byte[] outputBuffer,
+        OutputOrientation orientation = OutputOrientation.Display, float cropRatio = 1f)
+    {
+        return TryGetRgbaInternal(rawImage, targetWidth, targetHeight, outputBuffer, orientation, cropRatio, DeviceRotation);
+    }
+
+    [EditorBrowsable(EditorBrowsableState.Never)]
+    [Obsolete("Use frame.TryGetRgba(...) or TryGetRgba(...) instead.")]
+    protected bool TryGetMLFrame(SKImage? rawImage, int targetWidth, int targetHeight, byte[] outputBuffer,
+        OutputOrientation orientation = OutputOrientation.Display, float cropRatio = 1f)
+    {
+        return TryGetRgbaInternal(rawImage, targetWidth, targetHeight, outputBuffer, orientation, cropRatio, DeviceRotation);
+    }
+
+    internal static SKRect GetCenterCropSourceRect(int sourceWidth, int sourceHeight,
+        int targetWidth, int targetHeight, float cropRatio = 1f)
+    {
+        if (sourceWidth <= 0 || sourceHeight <= 0 || targetWidth <= 0 || targetHeight <= 0)
+            return new SKRect(0, 0, sourceWidth, sourceHeight);
+
+        cropRatio = float.IsFinite(cropRatio) && cropRatio > 0f
+            ? MathF.Min(cropRatio, 1f)
+            : 1f;
+
+        float sourceAspect = (float)sourceWidth / sourceHeight;
+        float targetAspect = (float)targetWidth / targetHeight;
+
+        SKRect rect;
+
+        if (MathF.Abs(sourceAspect - targetAspect) < 0.0001f)
+        {
+            rect = new SKRect(0, 0, sourceWidth, sourceHeight);
+        }
+        else if (sourceAspect > targetAspect)
+        {
+            float cropWidth = sourceHeight * targetAspect;
+            float left = (sourceWidth - cropWidth) * 0.5f;
+            rect = new SKRect(left, 0, left + cropWidth, sourceHeight);
+        }
+        else
+        {
+            float cropHeight = sourceWidth / targetAspect;
+            float top = (sourceHeight - cropHeight) * 0.5f;
+            rect = new SKRect(0, top, sourceWidth, top + cropHeight);
+        }
+
+        if (cropRatio >= 0.9999f)
+            return rect;
+
+        float scaledWidth = rect.Width * cropRatio;
+        float scaledHeight = rect.Height * cropRatio;
+        float centerX = rect.MidX;
+        float centerY = rect.MidY;
+
+        return new SKRect(
+            centerX - scaledWidth * 0.5f,
+            centerY - scaledHeight * 0.5f,
+            centerX + scaledWidth * 0.5f,
+            centerY + scaledHeight * 0.5f);
+    }
+
+    internal static void GetDrawSizeForOutputRotation(int targetWidth, int targetHeight, int outputRotation,
+        out int drawWidth, out int drawHeight)
+    {
+        outputRotation = NormalizeRotationDegrees(outputRotation);
+        if (outputRotation == 90 || outputRotation == 270)
+        {
+            drawWidth = targetHeight;
+            drawHeight = targetWidth;
+            return;
+        }
+
+        drawWidth = targetWidth;
+        drawHeight = targetHeight;
+    }
+
+    internal static void ApplyCanvasOutputRotation(SKCanvas canvas, int targetWidth, int targetHeight, int outputRotation)
+    {
+        switch (NormalizeRotationDegrees(outputRotation))
+        {
+            case 90:
+                canvas.Translate(targetWidth, 0);
+                canvas.RotateDegrees(90);
+                break;
+            case 180:
+                canvas.Translate(targetWidth, targetHeight);
+                canvas.RotateDegrees(180);
+                break;
+            case 270:
+                canvas.Translate(0, targetHeight);
+                canvas.RotateDegrees(270);
+                break;
+        }
+    }
+
+    private static int GetExtraRotationForOrientation(OutputOrientation orientation, int displayRotation)
+    {
+        return orientation switch
+        {
+            OutputOrientation.Display => 0,
+            OutputOrientation.Portrait => NormalizeRotationDegrees(-NormalizeRotationDegrees(displayRotation)),
+            _ => 0,
+        };
+    }
+
+    private static int NormalizeRotationDegrees(int rotation)
+    {
+        var normalized = rotation % 360;
+        if (normalized < 0)
+            normalized += 360;
+        return normalized;
+    }
+
 
     protected virtual void SetFrameFromNative()
     {
@@ -3556,7 +3738,7 @@ public partial class SkiaCamera : SkiaControl
                 {
                     // GetPreviewImage returns an already-rotated SKImage, so the caller has
                     // no further rotation to apply — rotation hint is 0 per the new contract.
-                    OnRawFrameAvailable(image, 0);
+                    OnRawFrameAvailable(CreateRawCameraFrame(image, 0));
                 }
 
                 // Apply preview compositing when needed — but skip when UseRecordingFramesForPreview is active
@@ -3734,7 +3916,7 @@ public partial class SkiaCamera : SkiaControl
                     Height = height,
                     Canvas = canvas,
                     Time = elapsed,
-                    IsPreview = true,
+                    SourceType = FrameSourceType.Preview, 
                     Scale = PreviewScale  // Use PreviewScale so user can match recording overlay
                 };
 

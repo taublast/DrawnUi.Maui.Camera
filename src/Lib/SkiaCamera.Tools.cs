@@ -20,23 +20,31 @@ public partial class SkiaCamera : SkiaControl
 
     /// <summary>
     /// This will run on rendering thread and return the task result making possible GPU usage.
-    /// Overlays any SkiaLayout over the captured photo and returns a new bitmap.
+    /// Renders a captured still photo, optionally composes a pre-overlay canvas stage, then runs
+    /// ProcessFrame / ProcessPreview-style drawing and an optional DrawnUI overlay tree.
     /// Remember to dispose the old bitmap if not needed anymore.
-    /// Can modify the created SkiaImage used for rendering by passing a callback `createdImage` to add effects etc.
+    /// Can modify the created SkiaImage used for rendering by passing a callback <paramref name="configureImage"/> to add effects.
+    /// When <paramref name="composeBase"/> is null, the image is rendered directly without the extra pre-overlay preparation pass.
     /// Will resolve EXIF orientation and will return a CPU-backed image even if processed on GPU.
     /// </summary>
-    /// <param name="captured"></param>
-    /// <param name="overlay"></param>
-    /// <param name="createdImage"></param>
-    /// <param name="useGpu"></param>
-    /// <param name="background"></param>
-    /// <param name="rotate"></param>
-    /// <returns></returns>
+    /// <param name="captured">Captured still image to render.</param>
+    /// <param name="overlay">Optional DrawnUI overlay tree rendered after <paramref name="drawOverlay"/>.</param>
+    /// <param name="composeBase">Optional canvas-stage hook that composes the rendered still before overlays are drawn.</param>
+    /// <param name="drawOverlay">Optional reusable ProcessFrame / ProcessPreview-style drawing callback.</param>
+    /// <param name="configureImage">Optional callback that configures the intermediate <see cref="SkiaImage"/> before it is rendered.</param>
+    /// <param name="useGpu">Use a GPU-backed surface for processing and return a CPU snapshot of the final result.</param>
+    /// <param name="background">Background color used when clearing the output surface.</param>
+    /// <param name="scale">Scale value assigned to the synthetic <see cref="DrawableFrame"/> passed into <paramref name="drawOverlay"/>.</param>
+    /// <param name="rotate">Apply EXIF/image rotation before rendering.</param>
+    /// <returns>Final rendered still image with all requested processing applied.</returns>
     public virtual Task<SKImage> RenderCapturedPhotoAsync(CapturedImage captured,
         SkiaLayout overlay,
-        Action<SkiaImage> createdImage = null,
+        Action<SKCanvas, SKImage>? composeBase = null,
+        Action<DrawableFrame>? drawOverlay = null,
+        Action<SkiaImage> configureImage = null,
         bool useGpu = false,
         SKColor? background = null,
+        float scale = 1f,
         bool rotate = true)
     {
 
@@ -47,16 +55,8 @@ public partial class SkiaCamera : SkiaControl
             {
                 captured.SolveExifOrientation();
 
-                var scaleOverlay = GetRenderingScaleFor(captured.Image.Width, captured.Image.Height);
-                double zoomCapturedPhotoX = TextureScale;
-                double zoomCapturedPhotoY = TextureScale;
-
                 var rotation = rotate ? captured.Rotation : 0;
-
-                if (background == null)
-                {
-                    background = SKColors.Black;
-                }
+                background ??= SKColors.Black;
 
                 var width = captured.Image.Width;
                 var height = captured.Image.Height;
@@ -68,62 +68,154 @@ public partial class SkiaCamera : SkiaControl
                 }
 
                 var info = new SKImageInfo(width, height);
-                SKSurface surface = null;
+                SKSurface? surface = null;
+
                 try
                 {
                     surface = CreateSurface(width, height, useGpu);
-
                     if (surface == null)
                     {
-                        Super.Log($"Cannot create SKSurface {width}x{height}");
-                        tcs.SetResult(default);
+                        tcs.SetResult(default!);
                         return;
                     }
 
-                    SKCanvas canvas = surface.Canvas;
+                    var canvas = surface.Canvas;
                     canvas.Clear(background.Value);
 
-                    //create offscreen rendering context
-                    var context = new SkiaDrawingContext()
+                    var context = new SkiaDrawingContext
                     {
                         Surface = surface,
-                        Canvas = surface.Canvas,
+                        Canvas = canvas,
                         Width = info.Width,
                         Height = info.Height
                     };
+
                     var destination = new SKRect(0, 0, info.Width, info.Height);
 
-                    //render image
                     var image = new SkiaImage
                     {
                         Tag = "Render",
                         LoadSourceOnFirstDraw = true,
                         VerticalOptions = LayoutOptions.Fill,
                         HorizontalOptions = LayoutOptions.Fill,
-                        IsClippedToBounds = false, //do not clip sides after rotation if any
+                        IsClippedToBounds = false,
                         AddEffect = this.Effect,
                         Aspect = TransformAspect.None,
-                        ZoomX = zoomCapturedPhotoX,
-                        ZoomY = zoomCapturedPhotoY,
-                        ImageBitmap =
-                            new LoadedImageSource(captured
-                                .Image) //must not dispose bitmap after that, it's used by preview outside
+                        ZoomX = TextureScale,
+                        ZoomY = TextureScale,
+                        ImageBitmap = new LoadedImageSource(captured.Image)
                     };
 
                     if (rotation != 0)
-                    {
-                        var transformRotation = (float)captured.Rotation;
-                        image.Rotation = -transformRotation;
-                    }
+                        image.Rotation = -rotation;
 
-                    createdImage?.Invoke(image);
+                    configureImage?.Invoke(image);
 
                     var ctx = new DrawingContext(context, destination, 1, null);
-                    image.Render(ctx);
 
-                    overlay?.Render(ctx.WithScale(scaleOverlay));
+                    // 1. draw captured still itself, optionally through a pre-overlay composition stage
+                    if (composeBase == null)
+                    {
+                        image.Render(ctx);
+                    }
+                    else
+                    {
+                        using var preparedSurface = SKSurface.Create(info);
+                        if (preparedSurface == null)
+                        {
+                            tcs.SetResult(default!);
+                            return;
+                        }
 
-                    surface.Canvas.Flush();
+                        var preparedCanvas = preparedSurface.Canvas;
+                        preparedCanvas.Clear(SKColors.Transparent);
+
+                        var preparedContext = new SkiaDrawingContext
+                        {
+                            Surface = preparedSurface,
+                            Canvas = preparedCanvas,
+                            Width = info.Width,
+                            Height = info.Height
+                        };
+
+                        var preparedDrawingContext = new DrawingContext(preparedContext, destination, 1, null);
+                        image.Render(preparedDrawingContext);
+
+                        using var preparedFrame = preparedSurface.Snapshot();
+                        if (preparedFrame == null)
+                        {
+                            tcs.SetResult(default!);
+                            return;
+                        }
+
+                        composeBase(canvas, preparedFrame);
+                    }
+
+                    // 2. run reusable overlay code written for ProcessFrame / ProcessPreview
+                    if (drawOverlay != null)
+                    {
+                        var callbackWidth = info.Width;
+                        var callbackHeight = info.Height;
+
+                        var replayRotation = ((captured.DeviceRotation % 360) + 360) % 360;
+
+                        if (replayRotation == 90 || replayRotation == 270)
+                        {
+                            callbackWidth = info.Height;
+                            callbackHeight = info.Width;
+                        }
+
+                        var frame = new DrawableFrame
+                        {
+                            Canvas = canvas,
+                            Width = callbackWidth,
+                            Height = callbackHeight,
+                            SourceType = FrameSourceType.Other,
+                            Time = captured.Time.ToLocalTime().TimeOfDay,
+                            Scale = scale
+                        };
+
+                        if (replayRotation == 0)
+                        {
+                            drawOverlay(frame);
+                        }
+                        else
+                        {
+                            var checkpoint = canvas.Save();
+
+                            switch (replayRotation)
+                            {
+                                case 90:
+                                    canvas.Translate(info.Width, 0);
+                                    canvas.RotateDegrees(90);
+                                    break;
+
+                                case 180:
+                                    canvas.Translate(info.Width, info.Height);
+                                    canvas.RotateDegrees(180);
+                                    break;
+
+                                case 270:
+                                    canvas.Translate(0, info.Height);
+                                    canvas.RotateDegrees(270);
+                                    break;
+                            }
+
+                            drawOverlay(frame);
+
+                            canvas.RestoreToCount(checkpoint);
+                        }
+
+                      
+                    }
+
+                    // 3. optional DrawnUI overlay tree, same as today
+                    if (overlay != null)
+                    {
+                        overlay.Render(ctx.WithScale(scale));
+                    }
+
+                    canvas.Flush();
 
                     if (!useGpu)
                     {
@@ -135,8 +227,9 @@ public partial class SkiaCamera : SkiaControl
                         using (var cpu = cpuSurface.Canvas)
                         {
                             cpu.DrawSurface(surface, 0, 0);
-                            cpu.Flush();   
+                            cpu.Flush();
                         }
+
                         tcs.SetResult(cpuSurface.Snapshot());
                     }
                 }
@@ -152,6 +245,77 @@ public partial class SkiaCamera : SkiaControl
         });
 
         return tcs.Task;
+    }
+
+    /// <summary>
+    /// This will run on rendering thread and return the task result making possible GPU usage.
+    /// Legacy compatibility overload that renders the still directly and optionally overlays a DrawnUI tree.
+    /// This overload keeps the previous direct-render path and does not run the pre-overlay stage.
+    /// Will resolve EXIF orientation and will return a CPU-backed image even if processed on GPU.
+    /// </summary>
+    /// <param name="captured">Captured still image to render.</param>
+    /// <param name="overlay">Optional DrawnUI overlay tree rendered over the still image.</param>
+    /// <param name="createdImage">Optional callback that configures the intermediate <see cref="SkiaImage"/> before it is rendered.</param>
+    /// <param name="useGpu">Use a GPU-backed surface for processing and return a CPU snapshot of the final result.</param>
+    /// <param name="background">Background color used when clearing the output surface.</param>
+    /// <param name="rotate">Apply EXIF/image rotation before rendering.</param>
+    /// <returns>Final rendered still image.</returns>
+    public virtual Task<SKImage> RenderCapturedPhotoAsync(CapturedImage captured,
+    SkiaLayout overlay,
+    Action<SkiaImage> createdImage = null,
+    bool useGpu = false,
+    SKColor? background = null,
+    bool rotate = true)
+    {
+        return RenderCapturedPhotoAsync(captured, overlay, null, null, createdImage, useGpu, background, 1, rotate);
+    }
+
+    /// <summary>
+    /// This will run on rendering thread and return the task result making possible GPU usage.
+    /// Gives a canvas-stage hook to compose the still image before ProcessFrame / ProcessPreview-style overlays are drawn.
+    /// Existing compatibility overloads keep their previous fast path and do not pay for this extra stage unless this overload is selected.
+    /// Will resolve EXIF orientation and will return a CPU-backed image even if processed on GPU.
+    /// </summary>
+    /// <param name="captured">Captured still image to render.</param>
+    /// <param name="composeBase">Canvas-stage hook that composes the rendered still before overlay drawing starts.</param>
+    /// <param name="drawOverlay">Optional reusable ProcessFrame / ProcessPreview-style drawing callback.</param>
+    /// <param name="configureImage">Optional callback that configures the intermediate <see cref="SkiaImage"/> before it is rendered.</param>
+    /// <param name="useGpu">Use a GPU-backed surface for processing and return a CPU snapshot of the final result.</param>
+    /// <param name="background">Background color used when clearing the output surface.</param>
+    /// <param name="rotate">Apply EXIF/image rotation before rendering.</param>
+    /// <returns>Final rendered still image.</returns>
+    public virtual Task<SKImage> RenderCapturedPhotoAsync(CapturedImage captured,
+        Action<SKCanvas, SKImage> composeBase,
+        Action<DrawableFrame>? drawOverlay = null,
+        Action<SkiaImage> configureImage = null,
+        bool useGpu = false,
+        SKColor? background = null,
+        bool rotate = true)
+    {
+        return RenderCapturedPhotoAsync(captured, null, composeBase, drawOverlay, configureImage, useGpu, background, 1, rotate);
+    }
+
+    /// <summary>
+    /// This will run on rendering thread and return the task result making possible GPU usage.
+    /// Compatibility overload for reusing ProcessFrame / ProcessPreview-style drawing over a captured still photo.
+    /// This overload keeps the legacy direct-render path and does not run the pre-overlay stage.
+    /// Will resolve EXIF orientation and will return a CPU-backed image even if processed on GPU.
+    /// </summary>
+    /// <param name="captured">Captured still image to render.</param>
+    /// <param name="drawOverlay">Reusable ProcessFrame / ProcessPreview-style drawing callback.</param>
+    /// <param name="configureImage">Optional callback that configures the intermediate <see cref="SkiaImage"/> before it is rendered.</param>
+    /// <param name="useGpu">Use a GPU-backed surface for processing and return a CPU snapshot of the final result.</param>
+    /// <param name="background">Background color used when clearing the output surface.</param>
+    /// <param name="rotate">Apply EXIF/image rotation before rendering.</param>
+    /// <returns>Final rendered still image.</returns>
+    public virtual Task<SKImage> RenderCapturedPhotoAsync(CapturedImage captured,
+        Action<DrawableFrame> drawOverlay,
+        Action<SkiaImage> configureImage = null,
+        bool useGpu = false,
+        SKColor? background = null,
+        bool rotate = true)
+    {
+        return RenderCapturedPhotoAsync(captured, null, null, drawOverlay, configureImage, useGpu, background, 1, rotate);
     }
 
     public static SKBitmap Reorient(SKBitmap bitmap, int rotation, bool flipHorizontal = false, bool flipVertical = false)
