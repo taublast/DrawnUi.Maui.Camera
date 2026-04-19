@@ -1,11 +1,28 @@
 ﻿namespace DrawnUi.Camera
 {
+    public enum FrameSourceType
+    {
+        Default = 0,
+        
+        Preview = 1,
+        
+        Other = 2,
+    }
+
     public struct DrawableFrame
     {
         public SKCanvas Canvas { get; set; }
         public int Width { get; set; }
         public int Height { get; set; }
-        public bool IsPreview { get; set; }
+        public FrameSourceType SourceType { get; set; }
+
+        public bool IsPreview
+        {
+            get
+            {
+                return SourceType == FrameSourceType.Preview;
+            }
+        }
         public TimeSpan Time { get; set; }
 
         /// <summary>
