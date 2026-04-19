@@ -484,7 +484,7 @@ public partial class SkiaCamera
                 }
 
                 // Fire ML hook — raw frame before ProcessFrame overlays are composited
-                OnRawFrameAvailable(imageToDraw, imageRotation);
+                OnRawFrameAvailable(CreateRawCameraFrame(imageToDraw, imageRotation, rawImageIsMirrored: imageFlip));
 
                 try
                 {
@@ -3983,7 +3983,8 @@ public partial class SkiaCamera
 
     #region ML Frame Helper
 
-    protected partial bool TryGetMLFrame(SKImage rawImage, int targetWidth, int targetHeight, byte[] outputBuffer)
+    private partial bool TryGetRgbaCore(SKImage? rawImage, int targetWidth, int targetHeight, byte[] outputBuffer,
+        int outputRotation, float cropRatio)
     {
         if (NativeControl is not NativeCamera nativeCam)
             return false;
@@ -4017,10 +4018,19 @@ public partial class SkiaCamera
         // PreviewTexture is the raw sensor CVPixelBuffer wrapped in a Metal texture —
         // still in sensor orientation. Apply rotation + selfie mirror via shader UV transform
         // so the ML buffer matches what the user sees in the preview.
-        int rotation = (int)nativeCam.CurrentRotation;
+        int rotation = NormalizeRotationDegrees((int)nativeCam.CurrentRotation + outputRotation);
         bool mirror = (CameraDevice?.Position ?? Facing) == CameraPosition.Selfie;
 
-        return _mlScaler.ScaleFromTexture(texture, outputBuffer, out _, rotation, mirror);
+        int orientedSourceWidth = rotation == 90 || rotation == 270 ? srcH : srcW;
+        int orientedSourceHeight = rotation == 90 || rotation == 270 ? srcW : srcH;
+        var srcRect = GetCenterCropSourceRect(orientedSourceWidth, orientedSourceHeight, targetWidth, targetHeight, cropRatio);
+        float cropOriginX = orientedSourceWidth > 0 ? srcRect.Left / orientedSourceWidth : 0f;
+        float cropOriginY = orientedSourceHeight > 0 ? srcRect.Top / orientedSourceHeight : 0f;
+        float cropSizeX = orientedSourceWidth > 0 ? srcRect.Width / orientedSourceWidth : 1f;
+        float cropSizeY = orientedSourceHeight > 0 ? srcRect.Height / orientedSourceHeight : 1f;
+
+        return _mlScaler.ScaleFromTexture(texture, outputBuffer, out _, rotation, mirror,
+            cropOriginX, cropOriginY, cropSizeX, cropSizeY);
     }
 
     #endregion

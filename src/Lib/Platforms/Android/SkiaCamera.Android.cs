@@ -1547,7 +1547,7 @@ public partial class SkiaCamera
                             // captured.Image is already in display orientation — no further rotation needed.
                             var rawImg = captured?.Image;
                             if (rawImg != null)
-                                OnRawFrameAvailable(rawImg, 0);
+                                OnRawFrameAvailable(CreateRawCameraFrame(rawImg, 0));
 
                             using (droidEnc.BeginFrame(elapsedLocal, out var canvas, out var info))
                             {
@@ -2243,21 +2243,32 @@ public partial class SkiaCamera
 
     #region ML Frame Helper
 
-    // Cached resources for TryGetMLFrame legacy (CPU) path — avoids per-call allocations
+    // Cached resources for TryGetRgba legacy (CPU) path — avoids per-call allocations
     private SKPaint _mlPaint;
     private SKSurface _mlSurface;
     private int _mlSurfaceWidth;
     private int _mlSurfaceHeight;
+    private SKSurface _mlGpuSurface;
+    private int _mlGpuSurfaceWidth;
+    private int _mlGpuSurfaceHeight;
+    private GRContext _mlGpuContext;
 
-    protected partial bool TryGetMLFrame(SKImage rawImage, int targetWidth, int targetHeight, byte[] outputBuffer)
+    private partial bool TryGetRgbaCore(SKImage? rawImage, int targetWidth, int targetHeight, byte[] outputBuffer,
+        int outputRotation, float cropRatio)
     {
         // GPU path: rawImage is null, raw frame is in GL FBO 0 — delegate to encoder's GPU scaler.
         // MUST be called synchronously from OnRawFrameAvailable while EGL context is current.
         if (rawImage == null)
         {
             if (_captureVideoEncoder is AndroidCaptureVideoEncoder droidEnc)
-                return droidEnc.TryScaleRawFrameForML(targetWidth, targetHeight, outputBuffer);
+                return droidEnc.TryScaleRawFrameForML(targetWidth, targetHeight, outputBuffer, cropRatio, outputRotation);
             return false;
+        }
+
+        if (_captureVideoEncoder is AndroidCaptureVideoEncoder gpuEncoder && gpuEncoder.CurrentGrContext != null)
+        {
+            if (TryGetRgbaGpuCore(gpuEncoder.CurrentGrContext, rawImage, targetWidth, targetHeight, outputBuffer, outputRotation, cropRatio))
+                return true;
         }
 
         // Legacy path: rawImage is a CPU-raster SKImage — scale via CPU Skia surface.
@@ -2281,11 +2292,70 @@ public partial class SkiaCamera
         {
             FilterQuality = SKFilterQuality.Low
         };
-        var dst = new SKRect(0, 0, targetWidth, targetHeight);
-        _mlSurface.Canvas.DrawImage(rawImage, dst, _mlPaint);
+        GetDrawSizeForOutputRotation(targetWidth, targetHeight, outputRotation, out int drawWidth, out int drawHeight);
+        var src = GetCenterCropSourceRect(rawImage.Width, rawImage.Height, drawWidth, drawHeight, cropRatio);
+        var dst = new SKRect(0, 0, drawWidth, drawHeight);
+        _mlSurface.Canvas.Clear(SKColors.Transparent);
+        _mlSurface.Canvas.Save();
+        ApplyCanvasOutputRotation(_mlSurface.Canvas, targetWidth, targetHeight, outputRotation);
+        _mlSurface.Canvas.DrawImage(rawImage, src, dst, _mlPaint);
+        _mlSurface.Canvas.Restore();
         _mlSurface.Canvas.Flush();
 
         using var snapshot = _mlSurface.Snapshot();
+        if (snapshot == null)
+            return false;
+
+        var handle = System.Runtime.InteropServices.GCHandle.Alloc(outputBuffer, System.Runtime.InteropServices.GCHandleType.Pinned);
+        try
+        {
+            return snapshot.ReadPixels(info, handle.AddrOfPinnedObject(), targetWidth * 4, 0, 0);
+        }
+        finally
+        {
+            handle.Free();
+        }
+    }
+
+    private bool TryGetRgbaGpuCore(GRContext grContext, SKImage rawImage, int targetWidth, int targetHeight,
+        byte[] outputBuffer, int outputRotation, float cropRatio)
+    {
+        int required = targetWidth * targetHeight * 4;
+        if (outputBuffer == null || outputBuffer.Length < required)
+            return false;
+
+        var info = new SKImageInfo(targetWidth, targetHeight, SKColorType.Rgba8888, SKAlphaType.Premul);
+        if (_mlGpuSurface == null || _mlGpuSurfaceWidth != targetWidth || _mlGpuSurfaceHeight != targetHeight || !ReferenceEquals(_mlGpuContext, grContext))
+        {
+            _mlGpuSurface?.Dispose();
+            _mlGpuSurface = SKSurface.Create(grContext, true, info);
+            _mlGpuSurfaceWidth = targetWidth;
+            _mlGpuSurfaceHeight = targetHeight;
+            _mlGpuContext = grContext;
+        }
+
+        if (_mlGpuSurface == null)
+            return false;
+
+        _mlPaint ??= new SKPaint
+        {
+            FilterQuality = SKFilterQuality.Low
+        };
+
+        GetDrawSizeForOutputRotation(targetWidth, targetHeight, outputRotation, out int drawWidth, out int drawHeight);
+        var src = GetCenterCropSourceRect(rawImage.Width, rawImage.Height, drawWidth, drawHeight, cropRatio);
+        var dst = new SKRect(0, 0, drawWidth, drawHeight);
+
+        var canvas = _mlGpuSurface.Canvas;
+        canvas.Clear(SKColors.Transparent);
+        canvas.Save();
+        ApplyCanvasOutputRotation(canvas, targetWidth, targetHeight, outputRotation);
+        canvas.DrawImage(rawImage, src, dst, _mlPaint);
+        canvas.Restore();
+        canvas.Flush();
+        grContext.Flush();
+
+        using var snapshot = _mlGpuSurface.Snapshot();
         if (snapshot == null)
             return false;
 
