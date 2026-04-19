@@ -219,6 +219,9 @@ namespace DrawnUi.Camera
         private GRContext _grContext;
         private SKSurface _skSurface;
         private SKImageInfo _skInfo;
+        private SKSurface _mlGpuSurface;
+        private SKImageInfo _mlGpuInfo;
+        private SKPaint _mlPaint;
 
         private bool _isRecording;
         private DateTime _startTime;
@@ -249,6 +252,8 @@ namespace DrawnUi.Camera
         }
         private readonly Queue<QueuedFrame> _frameQueue = new();
         private readonly int _maxQueuedFrames = 90;  // Max 3 seconds @ 30fps
+
+        internal GRContext CurrentGrContext => _grContext;
 
         // Drop only the warm-up dummy encoded sample before recording actually begins.
         private bool _skipFirstEncodedSample = true;
@@ -1897,10 +1902,11 @@ namespace DrawnUi.Camera
         /// MUST be called synchronously from OnRawFrameAvailable while EGL context is current.
         /// Returns false if the scaler is not ready or outputBuffer is too small.
         /// </summary>
-        public bool TryScaleRawFrameForML(int targetWidth, int targetHeight, byte[] outputBuffer)
+        public bool TryScaleRawFrameForML(int targetWidth, int targetHeight, byte[] outputBuffer, float cropRatio = 1f,
+            int outputRotation = 0)
         {
             // Lazily init / recreate when target dimensions change
-            if (_mlGlScaler == null || _mlGlScalerTargetWidth != targetWidth || _mlGlScalerTargetHeight != targetHeight)
+            if (outputRotation == 0 && (_mlGlScaler == null || _mlGlScalerTargetWidth != targetWidth || _mlGlScalerTargetHeight != targetHeight))
             {
                 _mlGlScaler?.Dispose();
                 _mlGlScaler = new GlPreviewScaler();
@@ -1914,7 +1920,70 @@ namespace DrawnUi.Camera
                 _mlGlScalerTargetHeight = targetHeight;
             }
 
-            return _mlGlScaler.ScaleAndReadbackTo(outputBuffer);
+            if (outputRotation == 0 && _mlGlScaler != null)
+                return _mlGlScaler.ScaleAndReadbackTo(outputBuffer, cropRatio);
+
+            if (_grContext == null || _skSurface == null)
+                return false;
+
+            using var sourceImage = _skSurface.Snapshot();
+            if (sourceImage == null)
+                return false;
+
+            return TryScaleGpuImageForML(sourceImage, targetWidth, targetHeight, outputBuffer, cropRatio, outputRotation);
+        }
+
+        internal bool TryScaleGpuImageForML(SKImage sourceImage, int targetWidth, int targetHeight, byte[] outputBuffer,
+            float cropRatio, int outputRotation)
+        {
+            if (_grContext == null || sourceImage == null)
+                return false;
+
+            int required = targetWidth * targetHeight * 4;
+            if (outputBuffer == null || outputBuffer.Length < required)
+                return false;
+
+            var info = new SKImageInfo(targetWidth, targetHeight, SKColorType.Rgba8888, SKAlphaType.Premul);
+            if (_mlGpuSurface == null || _mlGpuInfo.Width != targetWidth || _mlGpuInfo.Height != targetHeight)
+            {
+                _mlGpuSurface?.Dispose();
+                _mlGpuSurface = SKSurface.Create(_grContext, true, info);
+                _mlGpuInfo = info;
+            }
+
+            if (_mlGpuSurface == null)
+                return false;
+
+            _mlPaint ??= new SKPaint
+            {
+                FilterQuality = SKFilterQuality.Medium
+            };
+            SkiaCamera.GetDrawSizeForOutputRotation(targetWidth, targetHeight, outputRotation, out int drawWidth, out int drawHeight);
+            var src = SkiaCamera.GetCenterCropSourceRect(sourceImage.Width, sourceImage.Height, drawWidth, drawHeight, cropRatio);
+            var dst = new SKRect(0, 0, drawWidth, drawHeight);
+
+            var canvas = _mlGpuSurface.Canvas;
+            canvas.Clear(SKColors.Transparent);
+            canvas.Save();
+            SkiaCamera.ApplyCanvasOutputRotation(canvas, targetWidth, targetHeight, outputRotation);
+            canvas.DrawImage(sourceImage, src, dst, _mlPaint);
+            canvas.Restore();
+            canvas.Flush();
+            _grContext.Flush();
+
+            using var snapshot = _mlGpuSurface.Snapshot();
+            if (snapshot == null)
+                return false;
+
+            var handle = System.Runtime.InteropServices.GCHandle.Alloc(outputBuffer, System.Runtime.InteropServices.GCHandleType.Pinned);
+            try
+            {
+                return snapshot.ReadPixels(info, handle.AddrOfPinnedObject(), targetWidth * 4, 0, 0);
+            }
+            finally
+            {
+                handle.Free();
+            }
         }
 
         #region GPU Encoding Thread (Async Processing)
@@ -2143,7 +2212,7 @@ namespace DrawnUi.Camera
 
                     // Fire ML hook with real SKImage (was null before).
                     // FBO snapshot is already in display orientation — no further rotation needed.
-                    ParentCamera.OnRawFrameAvailable(rawFrame, 0);
+                    ParentCamera.OnRawFrameAvailable(ParentCamera.CreateRawCameraFrameInternal(rawFrame, 0, _width, _height));
 
                     // Apply user shader/effect via RenderFrameForRecording override.
                     // The frame fills the entire framebuffer so src == dst.
@@ -4009,6 +4078,9 @@ namespace DrawnUi.Camera
             _previewFallbackImagePool = null;
             _previewFallbackWidth = 0;
             _previewFallbackHeight = 0;
+
+            _mlPaint?.Dispose();
+            _mlPaint = null;
 
             _mlGlScaler?.Dispose();
             _mlGlScaler = null;
