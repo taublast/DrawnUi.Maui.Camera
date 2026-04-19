@@ -225,7 +225,7 @@ namespace DrawnUi.Camera
         /// Must be called on GL thread with active EGL context.
         /// Returns false on failure or if outputBuffer is too small.
         /// </summary>
-        public bool ScaleAndReadbackTo(byte[] outputBuffer, int sourceFbo = 0)
+        public bool ScaleAndReadbackTo(byte[] outputBuffer, float cropRatio = 1f, int sourceFbo = 0)
         {
             if (!_isInitialized)
                 return false;
@@ -236,11 +236,17 @@ namespace DrawnUi.Camera
 
             try
             {
+                var srcRect = SkiaCamera.GetCenterCropSourceRect(_inputWidth, _inputHeight, _outputWidth, _outputHeight, cropRatio);
+                int srcLeft = (int)MathF.Round(srcRect.Left);
+                int srcTop = (int)MathF.Round(srcRect.Top);
+                int srcRight = (int)MathF.Round(srcRect.Right);
+                int srcBottom = (int)MathF.Round(srcRect.Bottom);
+
                 GLES30.GlBindFramebuffer(GLES30.GlReadFramebuffer, sourceFbo);
                 GLES30.GlBindFramebuffer(GLES30.GlDrawFramebuffer, _previewFbo);
 
                 GLES30.GlBlitFramebuffer(
-                    0, 0, _inputWidth, _inputHeight,
+                    srcLeft, srcTop, srcRight, srcBottom,
                     0, _outputHeight, _outputWidth, 0,
                     GLES20.GlColorBufferBit,
                     GLES20.GlLinear);

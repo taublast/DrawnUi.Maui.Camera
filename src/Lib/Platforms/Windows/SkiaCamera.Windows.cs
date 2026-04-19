@@ -1,6 +1,7 @@
-using System.Diagnostics;
 using DrawnUi.Camera.Platforms.Windows;
 using DrawnUi.Views;
+using System.Diagnostics;
+using Windows.Media.Devices;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 
@@ -176,7 +177,7 @@ public partial class SkiaCamera : SkiaControl
         using (winEnc.BeginFrame(elapsed, out var canvas, out var info))
         {
             // srcImg from Windows capture is already in display orientation — no further rotation needed.
-            OnRawFrameAvailable(srcImg, 0);
+            OnRawFrameAvailable(CreateRawCameraFrame(srcImg, 0));
 
             if (canvas == null)
                 return;
@@ -1204,6 +1205,7 @@ public partial class SkiaCamera : SkiaControl
                 captured.Image = null;
                 var queuedFrame = new CapturedImage
                 {
+                    DeviceRotation = captured.DeviceRotation,
                     Image = srcImg,
                     Meta = captured.Meta,
                     Rotation = captured.Rotation,
@@ -1578,7 +1580,8 @@ public partial class SkiaCamera : SkiaControl
 
     #region ML Frame Helper
 
-    protected partial bool TryGetMLFrame(SKImage rawImage, int targetWidth, int targetHeight, byte[] outputBuffer)
+    private partial bool TryGetRgbaCore(SKImage? rawImage, int targetWidth, int targetHeight, byte[] outputBuffer,
+        int outputRotation, float cropRatio)
     {
         if (rawImage == null)
             return false;
@@ -1604,7 +1607,13 @@ public partial class SkiaCamera : SkiaControl
         try
         {
             using var paint = new SKPaint { FilterQuality = SKFilterQuality.Low };
-            surface.Canvas.DrawImage(rawImage, new SKRect(0, 0, targetWidth, targetHeight), paint);
+            GetDrawSizeForOutputRotation(targetWidth, targetHeight, outputRotation, out int drawWidth, out int drawHeight);
+            var src = GetCenterCropSourceRect(rawImage.Width, rawImage.Height, drawWidth, drawHeight, cropRatio);
+            surface.Canvas.Clear(SKColors.Transparent);
+            surface.Canvas.Save();
+            ApplyCanvasOutputRotation(surface.Canvas, targetWidth, targetHeight, outputRotation);
+            surface.Canvas.DrawImage(rawImage, src, new SKRect(0, 0, drawWidth, drawHeight), paint);
+            surface.Canvas.Restore();
             surface.Canvas.Flush();
             using var snapshot = surface.Snapshot();
             if (snapshot == null)

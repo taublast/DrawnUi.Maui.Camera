@@ -1,4 +1,5 @@
 #if IOS || MACCATALYST
+using System.Numerics;
 using CoreVideo;
 using Metal;
 using Foundation;
@@ -62,6 +63,8 @@ namespace DrawnUi.Camera
             "struct ScaleParams {\n" +
             "    uint rotation;\n" +
             "    uint mirror;\n" +
+            "    float2 cropOrigin;\n" +
+            "    float2 cropSize;\n" +
             "};\n" +
             "\n" +
             "kernel void scaleTexture(texture2d<half, access::sample> inputTexture [[texture(0)]],\n" +
@@ -75,6 +78,7 @@ namespace DrawnUi.Camera
             "\n" +
             "    float2 outputSize = float2(outputTexture.get_width(), outputTexture.get_height());\n" +
             "    float2 uv = (float2(gid) + 0.5) / outputSize;\n" +
+            "    uv = params.cropOrigin + uv * params.cropSize;\n" +
             "\n" +
             "    if (params.mirror != 0u) {\n" +
             "        uv.x = 1.0 - uv.x;\n" +
@@ -102,6 +106,8 @@ namespace DrawnUi.Camera
         {
             public uint Rotation;
             public uint Mirror;
+            public Vector2 CropOrigin;
+            public Vector2 CropSize;
         }
 
         public bool IsInitialized => _isInitialized;
@@ -112,7 +118,7 @@ namespace DrawnUi.Camera
         /// Initialize the Metal scaler with specified dimensions.
         /// <paramref name="outputFormat"/> controls the byte order of the readback buffer:
         /// BGRA8Unorm (default) matches Skia Bgra8888 for the preview pipeline,
-        /// RGBA8Unorm matches the documented ML buffer contract consumed by TryGetMLFrame.
+        /// RGBA8Unorm matches the documented ML buffer contract consumed by RawCameraFrame.TryGetRgba.
         /// </summary>
         public bool Initialize(int inputWidth, int inputHeight, int outputWidth, int outputHeight,
             MTLPixelFormat outputFormat = MTLPixelFormat.BGRA8Unorm)
@@ -228,7 +234,8 @@ namespace DrawnUi.Camera
         /// as UV transforms in the compute shader — output texture is written in display orientation.
         /// </summary>
         public bool Scale(CVPixelBuffer inputBuffer, byte[] outputData, out int bytesPerRow,
-            int rotation = 0, bool mirror = false)
+            int rotation = 0, bool mirror = false,
+            float cropOriginX = 0f, float cropOriginY = 0f, float cropSizeX = 1f, float cropSizeY = 1f)
         {
             bytesPerRow = 0;
 
@@ -280,6 +287,8 @@ namespace DrawnUi.Camera
                 {
                     Rotation = (uint)(((rotation % 360) + 360) % 360),
                     Mirror = mirror ? 1u : 0u,
+                    CropOrigin = new Vector2(cropOriginX, cropOriginY),
+                    CropSize = new Vector2(cropSizeX, cropSizeY),
                 };
                 unsafe
                 {
@@ -342,7 +351,8 @@ namespace DrawnUi.Camera
         /// as UV transforms in the compute shader — output texture is written in display orientation.
         /// </summary>
         public bool ScaleFromTexture(IMTLTexture inputTexture, byte[] outputData, out int bytesPerRow,
-            int rotation = 0, bool mirror = false)
+            int rotation = 0, bool mirror = false,
+            float cropOriginX = 0f, float cropOriginY = 0f, float cropSizeX = 1f, float cropSizeY = 1f)
         {
             bytesPerRow = 0;
 
@@ -375,6 +385,8 @@ namespace DrawnUi.Camera
                 {
                     Rotation = (uint)(((rotation % 360) + 360) % 360),
                     Mirror = mirror ? 1u : 0u,
+                    CropOrigin = new Vector2(cropOriginX, cropOriginY),
+                    CropSize = new Vector2(cropSizeX, cropSizeY),
                 };
                 unsafe
                 {
@@ -455,7 +467,8 @@ namespace DrawnUi.Camera
         /// Returns null on failure.
         /// </summary>
         public IMTLTexture DispatchScaleToRing(IMTLTexture inputTexture, int rotation, bool mirror,
-            int outWidth, int outHeight)
+            int outWidth, int outHeight,
+            float cropOriginX = 0f, float cropOriginY = 0f, float cropSizeX = 1f, float cropSizeY = 1f)
         {
             if (!_isInitialized || inputTexture == null || outWidth <= 0 || outHeight <= 0)
                 return null;
@@ -500,6 +513,8 @@ namespace DrawnUi.Camera
                 {
                     Rotation = (uint)(((rotation % 360) + 360) % 360),
                     Mirror = mirror ? 1u : 0u,
+                    CropOrigin = new Vector2(cropOriginX, cropOriginY),
+                    CropSize = new Vector2(cropSizeX, cropSizeY),
                 };
                 unsafe
                 {
