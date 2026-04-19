@@ -165,6 +165,43 @@ camera.IsOn = true;
 > };
 > ```
 
+## ML/AI Frame Access
+
+Use raw-frame hook when model needs clean camera input:
+
+```csharp
+public class MyCamera : SkiaCamera
+{
+    private readonly byte[] _rgba = new byte[224 * 224 * 4];
+    private const float CropRatio = 1f;
+
+    protected override void OnRawFrameAvailable(RawCameraFrame frame)
+    {
+        if (!frame.TryGetRgba(224, 224, _rgba, OutputOrientation.Portrait, CropRatio))
+            return;
+
+        // queue inference with _rgba
+    }
+}
+```
+
+`width` and `height` are always the final output dimensions after orientation and scaling. Helpers preserve aspect ratio automatically and center-crop when needed. `cropRatio` zooms further into that centered crop window: `1f` keeps the full crop window, `0.5f` keeps its centered half.
+
+On Apple and Android GPU paths, crop + final rotation + scale are completed before the final `byte[]` readback.
+
+Use `NewPreviewSet` only when you want to inspect the final displayed preview. It fires after preview display and may already include preview effects, shaders, and during recording the `ProcessFrame` overlay when `UseRecordingFramesForPreview = true`.
+
+Rule of thumb:
+- `OnRawFrameAvailable(RawCameraFrame frame)` + `frame.TryGetRgba(...)`: clean camera input for AI/ML.
+- `OutputOrientation.Display`: match what the user sees.
+- `OutputOrientation.Portrait`: portrait-up output for models that expect canonical upright frames.
+- `cropRatio < 1f`: zoom into the center before scaling when the subject occupies only a small part of the frame.
+- `frame.TryGetRgbaBytes(...)`: owned raw `RGBA8888` payload for custom backends.
+- `frame.TryGetJpeg(...)` / `frame.TryGetPng(...)`: standard image payloads for hosted multimodal APIs.
+- `NewPreviewSet`: analyze exactly what the user currently sees.
+
+`RawCameraFrame.RawImage` is optional advanced access and may be null on zero-copy GPU paths. `RawImageRotation` tells how much raw-image consumers still need to rotate to reach display orientation. `DisplayRotation` tells how the current preview is rotated relative to portrait. Prefer `frame.TryGetRgba(...)` for portable ML code, `frame.TryGetRgbaBytes(...)` for raw custom uploads, and `frame.TryGetJpeg(...)` / `frame.TryGetPng(...)` when the destination expects a normal image file payload.
+
 ## Orientation Handling
 
 Lock the app to portrait at the platform level for correct saved video orientation. UI controls can still respond to device tilt by rotating individually.
@@ -292,6 +329,64 @@ bool ok = await SkiaCamera.RequestPermissionsAsync(
     NeedPermissions.Camera | NeedPermissions.Gallery | NeedPermissions.Microphone);
 if (ok) camera.IsOn = true;
 ```
+
+## Still Photo Rendering
+
+Reuse existing `ProcessFrame` or `ProcessPreview`-style `Action<DrawableFrame>` code on a captured still photo:
+
+```csharp
+private async void OnCaptureSuccess(object sender, CapturedImage captured)
+{
+    var imageWithOverlay = await CameraControl.RenderCapturedPhotoAsync(
+        captured,
+        drawOverlay: CameraControl.ProcessFrame,
+        useGpu: true);
+
+    captured.Image.Dispose();
+    captured.Image = imageWithOverlay;
+}
+```
+
+Notes:
+- `drawOverlay` runs after the still image is rendered and before any optional DrawnUI overlay tree.
+- The synthetic `DrawableFrame` uses callback-space width and height for the replayed overlay viewport.
+- For rotated stills, `drawOverlay` is replayed using the captured device orientation so reused preview/recording overlay code sees the expected viewport orientation.
+- `Scale` defaults to `1f` unless you pass another value through the full overload.
+- `IsPreview` is currently `false` for this path.
+- Use `createdImage` on the legacy convenience overload: `RenderCapturedPhotoAsync(captured, overlay, createdImage, ...)`.
+- Use `configureImage` only on the full overload that also exposes `composeBase` and `drawOverlay`.
+- Use named arguments when mixing stages to avoid overload ambiguity.
+
+Use the `composeBase` overload when the still path needs a canvas composition step before overlay drawing:
+
+```csharp
+private async void OnCaptureSuccess(object sender, CapturedImage captured)
+{
+    using var sepiaPaint = new SKPaint { ColorFilter = SKColorFilter.CreateColorMatrix(_sepiaMatrix) };
+
+    var imageWithPreviewStyle = await CameraControl.RenderCapturedPhotoAsync(
+        captured,
+        composeBase: (canvas, frameImage) =>
+        {
+            canvas.DrawImage(frameImage, 0, 0, sepiaPaint);
+        },
+        drawOverlay: CameraControl.ProcessPreview,
+        useGpu: true);
+
+    captured.Image.Dispose();
+    captured.Image = imageWithPreviewStyle;
+}
+```
+
+Ordering for the full overload is:
+- `configureImage` configures the temporary `SkiaImage`
+- `composeBase` composes the rendered still into the destination canvas
+- `drawOverlay` draws reusable `DrawableFrame` overlays in replayed callback space based on the captured device orientation
+- optional DrawnUI `overlay` renders last
+
+Performance note:
+- the extra preparation pass exists only when `composeBase` is supplied
+- older compatibility overloads keep the legacy direct-render path and do not spend time on the pre-overlay stage
 
 ## Documentation
 

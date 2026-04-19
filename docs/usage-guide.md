@@ -15,8 +15,8 @@
 | 9 | [Real-Time Effects & Custom Shaders](#9-real-time-effects--custom-shaders) | Built-in effects, SKSL shaders |
 | 10 | [Zoom Control](#10-zoom-control) | Manual zoom, pinch-to-zoom |
 | 11 | [Camera State Management](#11-camera-state-management) | `StateChanged` event, `HardwareState` |
-| 12 | [Live Processing](#12-live-processing-processframe--processpreview) | Drawing overlays on preview and recorded video, `NewPreviewSet` for AI/ML |
-| 13 | [Raw Frame ML Hook](#13-raw-frame-ml-hook-onrawframeacquired--trygetmlframe) | Zero-overhead GPU-accelerated raw frame access for ML/AI inference |
+| 12 | [Live Processing](#12-live-processing-processframe--processpreview) | Drawing overlays on preview and recorded video, `NewPreviewSet` for processed-preview analysis |
+| 13 | [Raw Frame ML Hook](#13-raw-frame-ml-hook-onrawframeavailablerawcameraframe--trygetrgba) | Zero-overhead GPU-accelerated raw frame access for ML/AI inference |
 | 14 | [Permission Handling](#14-permission-handling) | `NeedPermissions` flags, `CheckPermissions()`, async helpers |
 | 15 | [Complete MVVM Example](#15-complete-mvvm-example) | Full ViewModel + Page example |
 
@@ -440,14 +440,18 @@ Use `RenderCapturedPhotoAsync` to bake a shader effect into a still photo after 
 ```csharp
 private async void OnCaptureSuccess(object sender, CapturedImage captured)
 {
-    var imageWithEffect = await CameraControl.RenderCapturedPhotoAsync(captured, null, image =>
-    {
-        var shaderEffect = new SkiaShaderEffect
+    var imageWithEffect = await CameraControl.RenderCapturedPhotoAsync(
+        captured,
+        overlay: null,
+        configureImage: image =>
         {
-            ShaderSource = ShaderEffectHelper.GetFilename(CameraControl.VideoEffect),
-        };
-        image.VisualEffects.Add(shaderEffect);
-    }, true);
+            var shaderEffect = new SkiaShaderEffect
+            {
+                ShaderSource = ShaderEffectHelper.GetFilename(CameraControl.VideoEffect),
+            };
+            image.VisualEffects.Add(shaderEffect);
+        },
+        useGpu: true);
 
     captured.Image.Dispose();
     captured.Image = imageWithEffect;
@@ -455,7 +459,7 @@ private async void OnCaptureSuccess(object sender, CapturedImage captured)
 }
 ```
 
-The last `bool` parameter controls whether to apply the current `Effect` as well.
+Use named arguments here because `drawOverlay` now sits before `configureImage` in the overload.
 
 ### Shader Preview Grid (Like Instagram Filters)
 ```xml
@@ -530,7 +534,7 @@ SkiaCamera provides **two drawing callbacks** for real-time overlay rendering, p
 |------------------|------|---------------|----------|
 | `ProcessFrame` | `Action<DrawableFrame>` | Each frame being **encoded to video** | Watermarks, telemetry, overlays baked into recorded video |
 | `ProcessPreview` | `Action<DrawableFrame>` | Each **preview** frame before display | Show overlays on live preview (e.g., gauges, guides) |
-| `NewPreviewSet` | `EventHandler<LoadedImageSource>` | Each preview frame after display | Read-only AI/ML analysis, face detection, QR scanning |
+| `NewPreviewSet` | `EventHandler<LoadedImageSource>` | Each preview frame after display | Read-only analysis of displayed preview, UI validation, processed-preview scanning |
 
 > **Key Insight**: `ProcessFrame` draws on what gets **recorded**. `ProcessPreview` draws on what the user **sees**. `NewPreviewSet` lets you **read** already processed preview frames. All three are independent.
 
@@ -595,6 +599,64 @@ camera.ProcessFrame = DrawOverlay;
 camera.ProcessPreview = DrawOverlay;
 ```
 
+### Reuse ProcessFrame / ProcessPreview on Captured Still Photo
+
+`RenderCapturedPhotoAsync` can now run the same `Action<DrawableFrame>` callback over a captured still photo.
+`drawOverlay` runs after the captured image is rendered and before any optional `SkiaLayout` overlay is rendered.
+
+```csharp
+private async void OnCaptureSuccess(object sender, CapturedImage captured)
+{
+    var imageWithOverlay = await CameraControl.RenderCapturedPhotoAsync(
+        captured,
+        overlay: null,
+        drawOverlay: CameraControl.ProcessFrame,
+        useGpu: true);
+
+    captured.Image.Dispose();
+    captured.Image = imageWithOverlay;
+}
+```
+
+Notes:
+- The generated still-photo `DrawableFrame` uses callback-space dimensions for the replayed overlay viewport.
+- For rotated stills, `drawOverlay` is replayed using the captured device orientation so reused preview/recording overlay code sees the expected viewport orientation.
+- `Scale` defaults to `1.0` unless you pass a custom value.
+- `IsPreview` is currently `false`, so draw-overlay code follows the non-preview branch.
+
+### Add a Pre-Overlay Still Stage
+
+Use the new `composeBase` overload when your live preview path depends on a canvas composition step before `ProcessPreview`.
+
+```csharp
+private async void OnCaptureSuccess(object sender, CapturedImage captured)
+{
+    using var sepiaPaint = new SKPaint { ColorFilter = SKColorFilter.CreateColorMatrix(_sepiaMatrix) };
+
+    var imageWithPreviewStyle = await CameraControl.RenderCapturedPhotoAsync(
+        captured,
+        composeBase: (canvas, frameImage) =>
+        {
+            canvas.DrawImage(frameImage, 0, 0, sepiaPaint);
+        },
+        drawOverlay: CameraControl.ProcessPreview,
+        useGpu: true);
+
+    captured.Image.Dispose();
+    captured.Image = imageWithPreviewStyle;
+}
+```
+
+Ordering for the full overload is:
+- `configureImage` configures the intermediate `SkiaImage`
+- `composeBase` composes the rendered still into the destination canvas
+- `drawOverlay` draws reusable `DrawableFrame` overlays in replayed callback space based on the captured device orientation
+- `overlay.Render(...)` draws any DrawnUI overlay tree
+
+Performance note:
+- the extra preparation pass exists only when `composeBase` is supplied
+- existing overloads keep the direct-render path and do not spend time on the pre-overlay stage
+
 ### DrawableFrame Properties
 
 | Property | Type | Description |
@@ -605,6 +667,8 @@ camera.ProcessPreview = DrawOverlay;
 | `Time` | `TimeSpan` | Elapsed time since recording started |
 | `IsPreview` | `bool` | `true` for preview frames, `false` for recording frames |
 | `Scale` | `float` | 1.0 for recording frames; `PreviewScale` for preview frames |
+
+For still-photo rendering via `RenderCapturedPhotoAsync(..., drawOverlay: ...)`, `DrawableFrame` uses replayed callback-space dimensions, custom `scale` if provided, and currently sets `IsPreview = false`.
 
 ### Camera Layout Coordinates
 
@@ -618,6 +682,20 @@ Two properties expose the camera's position on the canvas:
 Use `DisplayRect` when mapping screen touch coordinates to camera frame coordinates, or when positioning overlays that must stay inside the actual video area.
 
 ### NewPreviewSet Event (Read-Only Analysis)
+
+Use `NewPreviewSet` when you want to inspect the **displayed preview** exactly as the user sees it.
+
+What it sees:
+- `Effect` and preview shader output
+- `ProcessPreview` drawing
+- during recording, `ProcessFrame` overlays too when `UseRecordingFramesForPreview = true`
+
+Use it for:
+- preview QA/inspection
+- scanning the final on-screen preview
+- workflows that intentionally depend on what the user sees
+
+Do not use it when the model needs clean camera pixels independent from overlays/effects. For that use the raw-frame hook in section 13.
 
 For AI/ML processing where you need to **read** preview frames without drawing on them:
 
@@ -650,16 +728,21 @@ private void OnNewPreviewFrame(object sender, LoadedImageSource source)
 }
 ```
 
-## 13. Raw Frame ML Hook: OnRawFrameAvailable & TryGetMLFrame
+## 13. Raw Frame ML Hook: OnRawFrameAvailable(RawCameraFrame) & TryGetRgba
 
-When you need to run ML/AI inference on **raw camera frames** before any `ProcessFrame` overlay is composited, use `OnRawFrameAvailable` + `TryGetMLFrame`.
+When you need to run ML/AI inference on **raw camera frames** before any `ProcessFrame` overlay is composited, override `OnRawFrameAvailable(RawCameraFrame frame)` and call `frame.TryGetRgba(...)`.
 
 > **Why not `NewPreviewSet`?** During recording with `UseRecordingFramesForPreview = true` (default), the preview already has `ProcessFrame` overlays baked in.
 
 | Member | Kind | Description |
 |--------|------|-------------|
-| `OnRawFrameAvailable(SKImage rawImage, int rotation)` | `protected internal virtual` | Called every frame with the raw camera image. `rotation` is degrees the caller must still rotate `rawImage` by to reach display orientation — `0` on most paths, non-zero only when the platform delivers a sensor-orientation frame (iOS recording zero-copy). Ignore it when you route through `TryGetMLFrame` — that buffer is always upright. |
-| `TryGetMLFrame(SKImage rawImage, int targetWidth, int targetHeight, byte[] outputBuffer)` | `protected partial bool` | GPU-accelerated scale + pixel readback into a pre-allocated byte array (RGBA8888). |
+| `OnRawFrameAvailable(RawCameraFrame frame)` | `protected internal virtual` | Called every frame with a temporary raw-frame context. Use `frame.TryGetRgba(...)` for portable AI/ML input. |
+| `frame.RawImage` | `SKImage?` | Optional advanced access to the raw frame. May be null on zero-copy GPU paths. Valid only inside the callback. |
+| `frame.Rotation` | `int` | Degrees the caller must still rotate `frame.RawImage` by to reach display orientation. Ignore when you use `frame.TryGetRgba(...)`. |
+| `frame.TryGetRgba(int targetWidth, int targetHeight, byte[] outputBuffer)` | `bool` | GPU-accelerated scale + pixel readback into a pre-allocated RGBA8888 byte array. |
+| `frame.TryGetRgbaBytes(int targetWidth, int targetHeight, out byte[]? rgbaBytes)` | `bool` | Returns an owned raw `RGBA8888` buffer, useful for custom endpoints that accept raw pixels. |
+| `frame.TryGetJpeg(int targetWidth, int targetHeight, out byte[]? jpegBytes, int quality = 100)` | `bool` | Returns a JPEG payload encoded from display-oriented frame pixels. Good fit for hosted multimodal APIs. |
+| `frame.TryGetPng(int targetWidth, int targetHeight, out byte[]? pngBytes)` | `bool` | Returns a PNG payload encoded from display-oriented frame pixels when lossless upload is needed. |
 
 ### Platform Implementation
 
@@ -678,16 +761,17 @@ public class MyCam : SkiaCamera
     private readonly byte[] _mlBuffer = new byte[224 * 224 * 4]; // RGBA8888
     private readonly SemaphoreSlim _mlSemaphore = new(1, 1);
 
-    protected internal override void OnRawFrameAvailable(SKImage rawImage, int rotation)
+    protected override void OnRawFrameAvailable(RawCameraFrame frame)
     {
         // MUST be called synchronously (Android GPU: EGL context is current)
-        if (!TryGetMLFrame(rawImage, 224, 224, _mlBuffer))
+        if (!frame.TryGetRgba(224, 224, _mlBuffer))
             return;
 
         if (!_mlSemaphore.Wait(0))
             return;
 
         var snapshot = _mlBuffer.ToArray();
+        int rotation = frame.Rotation;
 
         Task.Run(() =>
         {
@@ -702,13 +786,20 @@ public class MyCam : SkiaCamera
 
 `outputBuffer` is filled with raw **RGBA8888** pixels, `targetWidth * targetHeight * 4` bytes, top-to-bottom, no row padding.
 
+### Which export method to use
+
+- Use `frame.TryGetRgba(...)` when you already own a reusable buffer and want the fastest hot-loop path.
+- Use `frame.TryGetRgbaBytes(...)` when a custom backend expects raw `RGBA8888` plus separate width/height metadata.
+- Use `frame.TryGetJpeg(...)` for hosted AI APIs that expect normal image payloads and do not need lossless data.
+- Use `frame.TryGetPng(...)` when the destination expects a standard image format but you want lossless encoding.
+
 ### Comparison of raw-frame ML options
 
 | API | Fires when | Has overlays? | GPU path? | Zero-alloc? |
 |-----|-----------|---------------|-----------|-------------|
 | `NewPreviewSet` | After preview display | Yes (when recording) | No | No |
 | `ProcessPreview` callback | Preview compositing | Partial | No | No |
-| **`OnRawFrameAvailable` + `TryGetMLFrame`** | Before any compositing | **Never** | **Yes** | **Yes** |
+| **`OnRawFrameAvailable(RawCameraFrame)` + `frame.TryGetRgba(...)`** | Before any compositing | **Never** | **Yes** | **Yes** |
 
 ## 14. Permission Handling
 

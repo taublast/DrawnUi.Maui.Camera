@@ -13,28 +13,43 @@ var camera = new SkiaCamera
     IsOn = true
 };
 
-// 2. CHANNEL 1: Live preview processing for AI/ML
+// 2. CHANNEL 1: Raw frame processing for AI/ML
+public class MyCamera : SkiaCamera
+{
+    private readonly byte[] _rgba = new byte[224 * 224 * 4];
+
+    protected override void OnRawFrameAvailable(RawCameraFrame frame)
+    {
+        if (!frame.TryGetRgba(224, 224, _rgba))
+            return;
+
+        QueueInference(_rgba, frame.Rotation);
+    }
+}
+
+// Hosted multimodal API path: export standard image bytes instead of raw RGBA.
+public class HostedVisionCamera : SkiaCamera
+{
+    protected override void OnRawFrameAvailable(RawCameraFrame frame)
+    {
+        if (!frame.TryGetJpeg(1024, 1024, out var jpegBytes, 100))
+            return;
+
+        QueueHostedVisionRequest(jpegBytes, "image/jpeg");
+    }
+}
+
+// Alternative preview channel: use NewPreviewSet only when you need the final displayed preview.
 camera.NewPreviewSet += (s, source) =>
 {
     source.ProtectFromDispose = true;
-    
-    if (!_mlSemaphore.Wait(0))
+    Task.Run(() =>
     {
-        source.ProtectFromDispose = false;
-        return;
-    }
-
-    Task.Run(async () =>
-    {
-        try
-        {
-            await RunMLAsync(source.Image);
-        }
+        try { AnalyzeDisplayedPreview(source.Image); }
         finally
         {
             source.ProtectFromDispose = false;
             source.Dispose();
-            _mlSemaphore.Release();
         }
     });
 };
@@ -56,19 +71,39 @@ await camera.TakePicture();
 ## Key Patterns for AI Agents
 
 1. **Understand dual channels**: Preview processing != Capture processing
-2. **Channel 1 (Preview)**: Use `NewPreviewSet` event for real-time AI/ML
-3. **Channel 2 (Capture)**: Use `CaptureSuccess` event for high-quality processing
-4. **Always check `camera.State == HardwareState.On` before operations**
-5. **Use `camera.IsOn = true/false` for lifecycle management**
-6. **Subscribe to events before starting camera**
-7. **Handle permissions with `SkiaCamera.RequestPermissionsAsync()` (request) or `SkiaCamera.RequestPermissionsGrantedAsync()` (silent check)**
-8. **Use `ConfigureAwait(false)` for async operations**
+2. **Channel 1 (Raw preview for AI/ML)**: Override `OnRawFrameAvailable(RawCameraFrame frame)` and call `frame.TryGetRgba(...)`
+3. **Raw export choice matters**: `TryGetRgbaBytes(...)` is for custom raw-pixel backends, `TryGetJpeg(...)` / `TryGetPng(...)` for hosted multimodal APIs
+4. **Channel 1B (Displayed preview)**: Use `NewPreviewSet` only when you need processed preview exactly as shown on screen
+5. **Channel 2 (Capture)**: Use `CaptureSuccess` event for high-quality processing
+6. **Always check `camera.State == HardwareState.On` before operations**
+7. **Use `camera.IsOn = true/false` for lifecycle management**
+8. **Subscribe to events before starting camera**
+9. **Handle permissions with `SkiaCamera.RequestPermissionsAsync()` (request) or `SkiaCamera.RequestPermissionsGrantedAsync()` (silent check)**
+10. **Treat `RawCameraFrame.RawImage` as optional/advanced only**
+11. **Use `ConfigureAwait(false)` for async operations**
+
+## Choosing Between Raw Frames and NewPreviewSet
+
+- Use `OnRawFrameAvailable(RawCameraFrame frame)` for face detection, landmarks, QR, OCR, and any model that must ignore overlays/effects.
+- Use `frame.TryGetJpeg(...)` or `frame.TryGetPng(...)` when the destination is a hosted multimodal API expecting a standard image payload.
+- Use `frame.TryGetRgbaBytes(...)` only when the server explicitly accepts raw `RGBA8888` bytes plus width/height.
+- Use `NewPreviewSet` for QA, visual inspection, or workflows that intentionally analyze the post-processed preview.
+- Remember: during recording with `UseRecordingFramesForPreview = true`, `NewPreviewSet` can already include `ProcessFrame` overlays.
 
 ## Common AI Agent Mistakes to Avoid
 
 **Don't confuse the channels:**
 ```csharp
-// WRONG: Thinking preview effects affect captured photos
+// WRONG: Feeding final preview into a model that should ignore overlays/effects
+camera.NewPreviewSet += (s, source) => RunFaceDetector(source.Image);
+
+// CORRECT
+protected override void OnRawFrameAvailable(RawCameraFrame frame)
+{
+    frame.TryGetRgba(224, 224, _rgba);
+}
+
+// ALSO WRONG: Thinking preview effects affect captured photos
 camera.Effect = SkiaImageEffect.Sepia;  // Only affects preview
 await camera.TakePicture(); // Photo is NOT sepia unless you process it separately
 ```

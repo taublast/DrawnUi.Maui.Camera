@@ -79,6 +79,10 @@ public CaptureFormat CurrentStillCaptureFormat { get; }
 public async Task TakePicture()
 public void FlashScreen(Color color, long duration = 250)
 public void OpenFileInGallery(string filePath)
+public virtual Task<SKImage> RenderCapturedPhotoAsync(CapturedImage captured, SkiaLayout overlay, Action<SKCanvas, SKImage>? composeBase = null, Action<DrawableFrame>? drawOverlay = null, Action<SkiaImage> configureImage = null, bool useGpu = false, SKColor? background = null, float scale = 1f, bool rotate = true)
+public virtual Task<SKImage> RenderCapturedPhotoAsync(CapturedImage captured, SkiaLayout overlay, Action<SkiaImage> createdImage = null, bool useGpu = false, SKColor? background = null, bool rotate = true)
+public virtual Task<SKImage> RenderCapturedPhotoAsync(CapturedImage captured, Action<SKCanvas, SKImage> composeBase, Action<DrawableFrame>? drawOverlay = null, Action<SkiaImage> configureImage = null, bool useGpu = false, SKColor? background = null, bool rotate = true)
+public virtual Task<SKImage> RenderCapturedPhotoAsync(CapturedImage captured, Action<DrawableFrame> drawOverlay, Action<SkiaImage> configureImage = null, bool useGpu = false, SKColor? background = null, bool rotate = true)
 
 // Video Recording Operations
 public async Task StartVideoRecording()
@@ -106,7 +110,14 @@ public virtual void WriteAudioSample(AudioSample sample)                  // Req
 
 // Audio Utilities
 public static void AmplifyPcm16(byte[] data, float gainFactor)  // In-place PCM16 gain, zero allocations
+
+// Raw Frame ML Hook
+protected internal virtual void OnRawFrameAvailable(RawCameraFrame frame)
 ```
+
+`RenderCapturedPhotoAsync(..., drawOverlay: ...)` lets you reuse existing `ProcessFrame` or `ProcessPreview`-style `Action<DrawableFrame>` code on a captured still photo. `drawOverlay` runs after the still image is rendered and before any optional `SkiaLayout` overlay is rendered. For rotated stills, the callback is replayed in capture-time viewport orientation so reused overlay code sees the expected callback space.
+
+`RenderCapturedPhotoAsync(..., composeBase: ...)` adds a canvas-stage hook for still-photo composition before `drawOverlay` runs. Existing compatibility overloads keep the legacy direct-render path and do not allocate or execute this extra stage unless the new overload is selected.
 
 ## Events
 
@@ -121,11 +132,33 @@ public event EventHandler<Exception> RecordingFailed;
 public event EventHandler<TimeSpan> RecordingProgress;
 
 // Preview & State Events
-public event EventHandler<LoadedImageSource> NewPreviewSet;
+public event EventHandler<LoadedImageSource> NewPreviewSet;    // Final displayed preview, may include preview/recording overlays
 public event EventHandler<HardwareState> StateChanged;
 public event EventHandler<string> OnError;
 public event EventHandler<double> Zoomed;
 ```
+
+## RawCameraFrame
+
+```csharp
+public readonly struct RawCameraFrame
+{
+    public SKImage? RawImage { get; }       // Optional advanced access, valid only inside callback
+    public int Rotation { get; }            // Extra rotation needed only when using RawImage directly
+    public int SourceWidth { get; }         // Raw frame width before resize
+    public int SourceHeight { get; }        // Raw frame height before resize
+    public bool HasRawImage { get; }
+    public bool TryGetRgba(int targetWidth, int targetHeight, byte[] outputBuffer)
+    public bool TryGetRgbaBytes(int targetWidth, int targetHeight, out byte[]? rgbaBytes)
+    public bool TryGetJpeg(int targetWidth, int targetHeight, out byte[]? jpegBytes, int quality = 100)
+    public bool TryGetPng(int targetWidth, int targetHeight, out byte[]? pngBytes)
+}
+```
+
+Use `OnRawFrameAvailable(RawCameraFrame frame)` + `frame.TryGetRgba(...)` for AI/ML input that must ignore preview overlays and effects.
+Use `frame.TryGetRgbaBytes(...)` only when a custom API explicitly accepts raw `RGBA8888` buffers.
+Use `frame.TryGetJpeg(...)` or `frame.TryGetPng(...)` when the destination expects normal image payloads.
+Use `NewPreviewSet` only when you intentionally need the final displayed preview.
 
 ## Data Classes
 
