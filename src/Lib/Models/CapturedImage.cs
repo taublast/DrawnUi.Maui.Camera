@@ -9,7 +9,15 @@
 
         public Metadata Meta { get; set; }
 
+        /// <summary>
+        /// Image rotation
+        /// </summary>
         public int Rotation { get; set; }
+
+        /// <summary>
+        /// Snapped device rotation at capture time
+        /// </summary>
+        public int DeviceRotation { get; set; }
 
         public CameraPosition Facing { get; set; }
 
@@ -78,7 +86,8 @@
                 Rotation = 0,
                 Facing = this.Facing,
                 Time = this.Time,
-                Path = this.Path
+                Path = this.Path,
+                DeviceRotation = this.DeviceRotation
             };
 
             clone.Meta.Orientation = 1;
