@@ -28,32 +28,16 @@ Read the [blog article](https://taublast.github.io/posts/VideoRecording) about t
 
 ## What's New
 
-### Android 
-
-Fixes:
-- Virtual devices on RELEASE will not use deprecated RenderScript, falling back onto it on DEBUG.
-- Fixed stale preview dispayed for a few frames after recording ends.
-
 ### Apple
 
-Performance optimizations:
-- During recording: Eliminated 2-3 synchronous GPU→CPU readbacks per frame → now 1 small ReadPixels at preview resolution only
-- Non-recording preview: MetalPreviewScaler no longer stalls on WaitUntilCompleted() → async double-buffered, CPU reads the previous frame while GPU renders the current one
-
-Fixes:
-- Fixed unprocessed preview dispayed when pre-recording canceled.
-
-### Windows
-
-Performance optimizations:
-- Fixed recording processing to go GPU
-- Removed preview GPU→CPU readback
+- Selfie camera captured photo now matches the preview X-mirror.
+- Preview rendering stays on GPU, no CPU readback.
 
 ### Shared
 
-- Updated DrawnUI nuget dependency to fix occasional GPU cache corruption 
-- Sample App added button to cancel pre-recording
-- **New virtual hooks** — `OnStateChanged` and `InvalidateGpuResources` (see [Extending SkiaCamera](#extending-skiacamera))
+- Improved RenderCapturedPhotoAsync to accept same code signature already used for ProcessPreview and ProcessFrame.
+- OnRawFrameAvailable renamed to `OnRawFrameAcquired` and improved with more received data.
+- Implemented `RawCameraFrame` with methods `TryGetRgba`, `TryGetJpeg`, `TryGetPng` and more for AI/ML usage.
  
 ## Extending SkiaCamera
 
